@@ -46,7 +46,15 @@ async function authorizeAppointment(
   const isDoctor =
     appointment.doctorId === actor.userId &&
     role === "DOCTOR";
-
+if (process.env.NODE_ENV !== "production") {
+  console.log("[Session Authorization Debug]", {
+    appointmentId,
+    authenticatedUserId: actor.userId,
+    authenticatedRole: role,
+    assignedDoctorId: appointment.doctorId,
+    isDoctor,
+  });
+}
   const isPatient =
     appointment.patientId === actor.userId &&
     PATIENT_ROLES.has(role);
