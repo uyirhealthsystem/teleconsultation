@@ -1,0 +1,341 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model DoctorAvailability {
+  availabilityId      String   @id @default(uuid())
+  doctorId            String
+  hospitalId          String?
+  dayOfWeek           Int
+  startTime           String
+  endTime             String
+  slotDurationMinutes Int      @default(30)
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([doctorId, dayOfWeek, isActive])
+  @@index([hospitalId, dayOfWeek])
+}
+
+model Appointment {
+  appointmentId      String            @id @default(uuid())
+  bookedByUserId     String
+  patientId          String
+  doctorId           String
+  hospitalId         String?
+  bookingFor         BookingFor        @default(SELF)
+  scheduledAt        DateTime
+  durationMinutes    Int               @default(30)
+  mode               ConsultationMode  @default(VIDEO)
+  status             AppointmentStatus @default(PENDING)
+  reason             String?
+  cancellationReason String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  session      ConsultationSession?
+  note         ConsultationNote?
+  prescription Prescription?
+  consents     ConsentRecord[]
+  participants ConsultationParticipant[]
+
+  payments Payment[]
+
+
+  @@index([patientId, scheduledAt])
+  @@index([bookedByUserId, scheduledAt])
+  @@index([doctorId, scheduledAt, status])
+  @@index([status, scheduledAt])
+  @@index([hospitalId, scheduledAt])
+}
+
+model ConsultationSession {
+  sessionId        String        @id @default(uuid())
+  appointmentId    String        @unique
+  meetingRoomId    String        @unique
+  status           SessionStatus @default(WAITING)
+  scheduledStartAt DateTime?
+  waitingStartedAt DateTime?
+  delayNotifiedAt  DateTime?
+  startedAt        DateTime?
+  endedAt          DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
+
+  @@index([status, scheduledStartAt])
+}
+
+model ConsentRecord {
+  consentId     String        @id @default(uuid())
+  appointmentId String
+  consentType   ConsentType
+  status        ConsentStatus @default(PENDING)
+
+  signerUserId       String
+  signerName         String
+  signerRelationship String?
+  signerAuthority    String?
+
+  consentVersion     String
+  consentTextHash    String
+  signatureMethod    SignatureMethod @default(ELECTRONIC_ATTESTATION)
+  signatureObjectKey String?
+  signatureHash      String?
+
+  signedAt  DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
+
+  @@index([appointmentId, status])
+  @@index([signerUserId, createdAt])
+}
+
+model ConsultationParticipant {
+  participantId   String          @id @default(uuid())
+  appointmentId   String
+  userId          String?
+  patientId       String?
+  displayName     String
+  role            ParticipantRole
+  invitedByUserId String?
+  joinedAt        DateTime?
+  leftAt          DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
+
+  @@index([appointmentId, role])
+  @@index([userId])
+  @@index([patientId])
+}
+
+model ConsultationNote {
+  noteId        String                 @id @default(uuid())
+  appointmentId String                 @unique
+  doctorId      String
+  status        ConsultationNoteStatus @default(DRAFT)
+  symptoms      String?
+  diagnosis     String?
+  clinicalNotes String?
+  advice        String?
+  followUpAt    DateTime?
+  finalizedAt   DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
+
+  @@index([doctorId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model Prescription {
+  prescriptionId String             @id @default(uuid())
+  appointmentId  String             @unique
+  doctorId       String
+  patientId      String
+  status         PrescriptionStatus @default(DRAFT)
+  instructions   String?
+
+  signatureMethod    SignatureMethod?
+  signatureObjectKey String?
+  signatureHash      String?
+  signedAt           DateTime?
+  signedByDoctorId   String?
+
+  issuedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  appointment Appointment        @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
+  items       PrescriptionItem[]
+
+  @@index([patientId, createdAt])
+  @@index([doctorId, createdAt])
+  @@index([status, issuedAt])
+}
+
+model PrescriptionItem {
+  prescriptionItemId String  @id @default(uuid())
+  prescriptionId     String
+  medicineName       String
+  dosage             String?
+  frequency          String?
+  duration           String?
+  quantity           Int?
+  instructions       String?
+  sortOrder          Int     @default(0)
+
+  prescription Prescription @relation(fields: [prescriptionId], references: [prescriptionId], onDelete: Cascade)
+
+  @@index([prescriptionId, sortOrder])
+}
+
+model Notification {
+  notificationId String              @id @default(uuid())
+  recipientId    String
+  recipientRole  String
+  channel        NotificationChannel @default(IN_APP)
+  title          String
+  message        String
+  status         NotificationStatus  @default(PENDING)
+  scheduledAt    DateTime?
+  sentAt         DateTime?
+  readAt         DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([recipientId, status, createdAt])
+  @@index([status, scheduledAt])
+}
+
+model AuditLog {
+  auditLogId String   @id @default(uuid())
+  actorId    String?
+  actorRole  String?
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model Payment {
+  paymentId       String          @id @default(uuid())
+  appointmentId   String
+  payerUserId     String
+  provider        PaymentProvider @default(RAZORPAY)
+  status          PaymentStatus   @default(CREATED)
+
+  amount          Int
+  currency        String          @default("INR")
+
+  gatewayOrderId   String? @unique
+  gatewayPaymentId String? @unique
+  gatewayRefundId  String? @unique
+
+  paymentMethod   String?
+  failureCode     String?
+  failureMessage  String?
+
+  paidAt          DateTime?
+  refundedAt      DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
+
+  @@index([appointmentId, status])
+  @@index([payerUserId, createdAt])
+  @@index([status, createdAt])
+}
+
+enum PaymentProvider {
+  RAZORPAY
+}
+
+enum PaymentStatus {
+  CREATED
+  PENDING
+  AUTHORIZED
+  PAID
+  FAILED
+  REFUND_PENDING
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  RESCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  NO_SHOW
+}
+
+enum BookingFor {
+  SELF
+  FAMILY_MEMBER
+  OTHER_PERSON
+}
+
+enum ConsultationNoteStatus {
+  DRAFT
+  FINALIZED
+}
+
+enum ConsultationMode {
+  VIDEO
+  AUDIO
+}
+
+enum SessionStatus {
+  WAITING
+  WAITING_FOR_DOCTOR
+  DOCTOR_DELAYED
+  ACTIVE
+  ENDED
+  FAILED
+}
+
+enum ConsentType {
+  TELECONSULTATION
+  MINOR_GUARDIAN
+  REPRESENTATIVE
+}
+
+enum ConsentStatus {
+  PENDING
+  SIGNED
+  REVOKED
+}
+
+enum SignatureMethod {
+  ELECTRONIC_ATTESTATION
+  DIGITAL_CERTIFICATE
+}
+
+enum ParticipantRole {
+  PATIENT
+  GUARDIAN
+  FAMILY_MEMBER
+  INTERPRETER
+  CAREGIVER
+}
+
+enum PrescriptionStatus {
+  DRAFT
+  ISSUED
+  CANCELLED
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  PUSH
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  READ
+}
