@@ -1,0 +1,111 @@
+name: CI/CD - Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deploys at the same time; queue them instead.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  APP_NAME: teleconsultation
+
+jobs:
+  build:
+    name: Build & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # prisma.config.ts requires DATABASE_URL to be set, but generate never connects to it.
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://build:build@localhost:5432/build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Package release
+        run: |
+          tar -czf release.tgz \
+            dist prisma prisma.config.ts \
+            package.json package-lock.json \
+            ecosystem.config.cjs scripts/deploy.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release.tgz
+          retention-days: 7
+
+  deploy:
+    name: Deploy to EC2
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+
+      # Every secret except the EC2_* connection secrets becomes a line in the server's .env.
+      - name: Build .env from secrets
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          jq -r '
+            to_entries[]
+            | select(.key | test("^(EC2_.*|GITHUB_TOKEN|github_token)$") | not)
+            | "\(.key)=\(.value | @json)"
+          ' <<< "$SECRETS_JSON" > .env
+          grep -q '^NODE_ENV=' .env || echo 'NODE_ENV="production"' >> .env
+          echo "Writing $(wc -l < .env) variables: $(cut -d= -f1 .env | paste -sd, -)"
+
+      - name: Configure SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload and activate release
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          RELEASE: ${{ github.sha }}
+        run: |
+          SSH="ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes $EC2_USER@$EC2_HOST"
+          SCP="scp -i ~/.ssh/deploy_key"
+
+          $SSH "mkdir -p ~/$APP_NAME/shared ~/$APP_NAME/releases/$RELEASE"
+          $SCP release.tgz "$EC2_USER@$EC2_HOST:~/$APP_NAME/releases/$RELEASE/"
+          $SCP .env "$EC2_USER@$EC2_HOST:~/$APP_NAME/shared/.env"
+
+          $SSH "set -e
+            chmod 600 ~/$APP_NAME/shared/.env
+            cd ~/$APP_NAME/releases/$RELEASE
+            tar -xzf release.tgz && rm release.tgz
+            bash scripts/deploy.sh $RELEASE"
+
+      - name: Clean up
+        if: always()
+        run: rm -f ~/.ssh/deploy_key .env
