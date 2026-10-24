@@ -4,19 +4,11 @@ import type { Request, Response } from "express";
 import { ApiError } from "../utils/ApiError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
-import {
-  createConsultationNote,
-  getConsultationNote,
-  updateConsultationNote,
-  finalizeConsultationNote,
-} from "../services/consultation.notes.service.js";
+import {createConsultationNote,getConsultationNote,updateConsultationNote,finalizeConsultationNote} from "../services/consultation.notes.service.js";
 
 import type { ConsultationNoteActor } from "../services/consultation.notes.service.js";
 
-import {
-  getRequestedLanguage,
-  translateResponse,
-} from "../utils/translate.response.js";
+import {getRequestedLanguage,translateResponse} from "../utils/translate.response.js";
 
 function getActor(req: Request): ConsultationNoteActor {
   const userId = req.header("x-user-id");

@@ -8,7 +8,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 
 import {
-  createOrGetConsultationSession,
+  //createOrGetConsultationSession,
   getConsultationSession,
   checkInPatient,
   markDoctorDelayed,
@@ -47,25 +47,25 @@ function getAppointmentId(req: Request): string {
   return appointmentId;
 }
 
-export const createSession = asyncHandler(
-  async (req: Request, res: Response) => {
-    const session = await createOrGetConsultationSession(
-      getAppointmentId(req),
-      getActor(req),
-    );
+// export const createSession = asyncHandler(
+//   async (req: Request, res: Response) => {
+//     const session = await createOrGetConsultationSession(
+//       getAppointmentId(req),
+//       getActor(req),
+//     );
 
-    const language = getRequestedLanguage(req);
+//     const language = getRequestedLanguage(req);
 
-    res.status(200).json({
-      success: true,
-      message: await translateResponse(
-        "Consultation session retrieved or created successfully",
-        language,
-      ),
-      data: await translateResponse(session, language),
-    });
-  },
-);
+//     res.status(200).json({
+//       success: true,
+//       message: await translateResponse(
+//         "Consultation session retrieved or created successfully",
+//         language,
+//       ),
+//       data: await translateResponse(session, language),
+//     });
+//   },
+// );
 
 export const getSession = asyncHandler(
   async (req: Request, res: Response) => {

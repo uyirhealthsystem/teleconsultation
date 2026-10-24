@@ -52,13 +52,14 @@ export async function assertAppointmentConsentReady(
 
   if (!hasTeleconsultationConsent) {
     throw new ApiError(400,"Teleconsultation consent is required before joining"
-        
+
     );
   }
 
   // When someone books for another person, require evidence that
   // the patient consented themselves or that a representative/guardian
   // consent record exists. Authority must be verified separately.
+  
   if (appointment.patientId !== appointment.bookedByUserId) {
     const patientConsented = consents.some(
       (consent) =>

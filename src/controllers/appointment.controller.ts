@@ -6,6 +6,9 @@ import {bookAppointment,getAvailableSlots,listMyAppointments,getAppointmentDetai
   rescheduleAppointment,} from "../services/appointment.service.js";
 import {getRequestedLanguage,translateResponse} from "../utils/translate.response";
 import { ApiError } from "../utils/ApiError.js";
+import {
+  createTeleconsultationPaymentIntent,
+} from "../services/payment.client.service.js";
 
 
 export async function getAvailableSlotsController(
@@ -40,17 +43,25 @@ export async function getAvailableSlotsController(
 }
 
 
+
+
+
 export async function bookAppointmentController(
   req: Request,
   res: Response,
+  next: NextFunction,
 ) {
-  const authReq = req as AuthenticatedRequest;
+  let appointmentId: string | undefined;
 
   try {
+    const authReq = req as AuthenticatedRequest;
+
     if (
       !authReq.userId ||
       !authReq.userRole ||
-      !["CITIZEN", "PATIENT"].includes(authReq.userRole.toUpperCase())
+      !["CITIZEN", "PATIENT"].includes(
+        authReq.userRole.toUpperCase(),
+      )
     ) {
       throw new ApiError(403, "Only patients can book appointments");
     }
@@ -75,7 +86,13 @@ export async function bookAppointmentController(
       typeof scheduledAt !== "string" ||
       !scheduledAt.trim() ||
       (mode !== undefined &&
-        !Object.values(ConsultationMode).includes(mode))
+        !Object.values(ConsultationMode).includes(mode)) ||
+      (hospitalId !== undefined &&
+        (typeof hospitalId !== "string" || !hospitalId.trim())) ||
+      (durationMinutes !== undefined &&
+        (typeof durationMinutes !== "number" ||
+          !Number.isInteger(durationMinutes))) ||
+      (reason !== undefined && typeof reason !== "string")
     ) {
       throw new ApiError(400, "Invalid appointment request");
     }
@@ -87,8 +104,8 @@ export async function bookAppointmentController(
       throw new ApiError(400, "Unsupported booking type");
     }
 
-    // The service must verify patientId against the authenticated
-    // user or the Citizen service before creating the appointment.
+    // Step 1: Create the appointment.
+    // The service should save it as PENDING_PAYMENT.
     const appointment = await bookAppointment(authReq.userId, {
       patientId: patientId.trim(),
       bookingFor,
@@ -100,12 +117,58 @@ export async function bookAppointmentController(
       reason,
     });
 
+    appointmentId = appointment.appointmentId;
+
+    // Step 2: Create the payment intent using the authenticated
+    // user's token. Never accept the payment amount from the client.
+    let payment;
+
+    try {
+      payment = await createTeleconsultationPaymentIntent({
+        appointmentId: appointment.appointmentId,
+        payerId: authReq.userId,
+        authorizationHeader: req.headers.authorization,
+        description: "Uyir Health teleconsultation appointment",
+      });
+    } catch (error) {
+      const statusCode =
+        error instanceof ApiError ? error.statusCode : 502;
+
+      const message =
+        error instanceof ApiError
+          ? error.message
+          : "Unable to initiate payment";
+
+      // The appointment remains PENDING_PAYMENT.
+      // Return its ID so the client can retry payment later.
+      res.status(statusCode).json({
+        success: false,
+        message,
+        data: {
+          appointmentId: appointment.appointmentId,
+          appointmentStatus: "PENDING_PAYMENT",
+        },
+      });
+      return;
+    }
+
+    // Step 3: Return checkout information to the frontend.
+    // Do not confirm the appointment here.
     const language = getRequestedLanguage(req);
 
     res.status(201).json({
       success: true,
-      message: "Appointment booked successfully",
-      data: await translateResponse(appointment, language),
+      message: "Appointment created; complete payment to confirm it",
+      data: {
+        appointment: await translateResponse(appointment, language),
+        payment: {
+          paymentId: payment.id,
+          status: payment.status,
+          checkoutUrl: payment.checkoutUrl,
+          amount: payment.amount,
+          currency: payment.currency,
+        },
+      },
     });
   } catch (error) {
     if (error instanceof ApiError) {
@@ -116,21 +179,11 @@ export async function bookAppointmentController(
       return;
     }
 
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Unable to book appointment";
-
-    const status = message.toLowerCase().includes("no longer available")
-      ? 409
-      : 400;
-
-    res.status(status).json({
-      success: false,
-      message,
-    });
+    next(error);
   }
 }
+
+
 
 
 

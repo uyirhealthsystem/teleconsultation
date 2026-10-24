@@ -2,7 +2,7 @@
 import { Router } from "express";
 
 import {
-  createSession,
+  //createSession,
   getSession,
   patientCheckIn,
   doctorMarkDelay,
@@ -12,10 +12,10 @@ import {
 
 const router = Router();
 
-router.post(
-  "/appointments/:appointmentId/session",
-  createSession,
-);
+// router.post(
+//   "/appointments/:appointmentId/session",
+//   createSession,
+// );
 
 router.get(
   "/appointments/:appointmentId/sessions",

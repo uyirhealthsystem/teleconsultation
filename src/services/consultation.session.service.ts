@@ -1,12 +1,9 @@
 
-import {
-  ConsentType,
-  SessionStatus,
-} from "../generated/prisma/client.js";
-
+import {ConsentType,SessionStatus} from "../generated/prisma/client.js";
 import { prisma } from "./prisma.service.js";
 import { assertAppointmentHasSignedConsent } from "./consent.service.js";
 import { ApiError } from "../utils/ApiError.js";
+import { hms } from "./hms.service.js";
 
 const ELIGIBLE_APPOINTMENT_STATUSES = [
   "CONFIRMED",
@@ -108,70 +105,91 @@ async function getSessionOrThrow(sessionId: string) {
 
 /**
  * Creates one session per appointment.
- * Temporary placeholder until real 100ms room creation is integrated.
  */
-export async function createOrGetConsultationSession(
-  appointmentId: string,
-  actor: SessionActor,
-) {
-  const { appointment } = await authorizeAppointment(
-    appointmentId,
-    actor,
-  );
 
-  const existing = await prisma.consultationSession.findUnique({
-    where: { appointmentId },
-  });
+// export async function createOrGetConsultationSession(
+//   appointmentId: string,
+//   actor: SessionActor,
+// ) {
+//   const { appointment } = await authorizeAppointment(
+//     appointmentId,
+//     actor,
+//   );
 
-  if (existing) {
-    if (
-      existing.status === SessionStatus.ENDED ||
-      existing.status === SessionStatus.FAILED
-    ) {
-      throw new ApiError(
-        409,
-        "This consultation session is already closed",
-      );
-    }
+//   const existing = await prisma.consultationSession.findUnique({
+//     where: { appointmentId },
+//   });
 
-    return existing;
-  }
+//   if (existing) {
+//     if (
+//       existing.status === SessionStatus.ENDED ||
+//       existing.status === SessionStatus.FAILED
+//     ) {
+//       throw new ApiError(
+//         409,
+//         "This consultation session is already closed",
+//       );
+//     }
 
-  // Temporary only: replace with the actual 100ms room ID.
-  const meetingRoomId = `pending-${appointmentId}`;
+//     return existing;
+//   }
 
-  try {
-    return await prisma.consultationSession.create({
-      data: {
-        appointmentId,
-        meetingRoomId,
-        status: SessionStatus.WAITING,
-        scheduledStartAt: appointment.scheduledAt,
-      },
-    });
-  } catch (error) {
-    // Another request may have created the unique appointment session.
-    const session = await prisma.consultationSession.findUnique({
-      where: { appointmentId },
-    });
+//   const templateId = process.env.HMS_TEMPLATE_ID;
 
-    if (session) {
-      if (
-        session.status === SessionStatus.ENDED ||
-        session.status === SessionStatus.FAILED
-      ) {
-        throw new ApiError(
-          409,
-          "This consultation session is already closed",
-        );
-      }
+//   if (!templateId) {
+//     throw new ApiError(
+//       500,
+//       "100ms template ID is not configured",
+//     );
+//   }
 
-      return session;
-    }
+//   try {
+//     // Create the actual 100ms room.
+//     const roomName = `uyir-consultation-${appointmentId}`;
 
-    throw error;
-  }
-}
+//     const room = await hms.rooms.create({
+//       name: roomName,
+//       description: `Uyir Health consultation ${appointmentId}`,
+//       template_id: templateId,
+//       region: "in",
+//     });
+
+//     // Store the actual 100ms room ID.
+//     const meetingRoomId = room.id;
+
+//     return await prisma.consultationSession.create({
+//       data: {
+//         appointmentId,
+//         meetingRoomId,
+//         status: SessionStatus.WAITING,
+//         scheduledStartAt: appointment.scheduledAt,
+//       },
+//     });
+//   } catch (error) {
+//     // Another request may have created the session concurrently.
+//     const session = await prisma.consultationSession.findUnique({
+//       where: { appointmentId },
+//     });
+
+//     if (session) {
+//       if (
+//         session.status === SessionStatus.ENDED ||
+//         session.status === SessionStatus.FAILED
+//       ) {
+//         throw new ApiError(
+//           409,
+//           "This consultation session is already closed",
+//         );
+//       }
+
+//       return session;
+//     }
+
+//     // No session exists, so propagate the original error.
+//     throw error;
+//   }
+// }
+
 
 /**
  * Retrieves the session for an appointment.
@@ -489,3 +507,117 @@ export async function endConsultation(
 
   return getSessionOrThrow(session.sessionId);
 }
+
+
+
+
+
+export async function provisionConsultationSessionForPaidAppointment(
+  appointmentId: string,
+) {
+  const templateId = process.env.HMS_TEMPLATE_ID;
+
+  if (!templateId) {
+    throw new ApiError(
+      500,
+      "100ms template ID is not configured",
+    );
+  }
+
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        // Serialize provisioning attempts for this appointment
+        // across concurrent requests and backend instances.
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtext(${appointmentId})::bigint
+          )
+        `;
+
+        const appointment = await tx.appointment.findUnique({
+          where: { appointmentId },
+        });
+
+        if (!appointment) {
+          throw new ApiError(404, "Appointment not found");
+        }
+
+        if (
+          !ELIGIBLE_APPOINTMENT_STATUSES.includes(
+            String(appointment.status),
+          )
+        ) {
+          throw new ApiError(
+            409,
+            "Appointment is not eligible for a consultation session",
+          );
+        }
+
+        const existing =
+          await tx.consultationSession.findUnique({
+            where: { appointmentId },
+          });
+
+        if (existing) {
+          if (
+            existing.status === SessionStatus.ENDED ||
+            existing.status === SessionStatus.FAILED
+          ) {
+            throw new ApiError(
+              409,
+              "This consultation session is already closed",
+            );
+          }
+
+          return existing;
+        }
+
+        // The lock remains held while the room is created and
+        // its session record is saved.
+        const room = await hms.rooms.create({
+          name: `uyir-consultation-${appointmentId}`,
+          description: `Uyir Health consultation ${appointmentId}`,
+          template_id: templateId,
+          region: "in",
+        });
+
+        return await tx.consultationSession.create({
+          data: {
+            appointmentId,
+            meetingRoomId: room.id,
+            status: SessionStatus.WAITING,
+            scheduledStartAt: appointment.scheduledAt,
+          },
+        });
+      },
+      {
+        maxWait: 10_000,
+        timeout: 30_000,
+      },
+    );
+  } catch (error) {
+    // Recover if another request has already persisted the session.
+    const existing = await prisma.consultationSession.findUnique({
+      where: { appointmentId },
+    });
+
+    if (existing) {
+      if (
+        existing.status === SessionStatus.ENDED ||
+        existing.status === SessionStatus.FAILED
+      ) {
+        throw new ApiError(
+          409,
+          "This consultation session is already closed",
+        );
+      }
+
+      return existing;
+    }
+
+    throw error;
+  }
+}
+
+

@@ -6,7 +6,6 @@ import type { CreateConsentInput } from "../types/consent.types.js";
 import { ApiError } from "../utils/ApiError.js";
 
 
-
 function hashText(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
@@ -242,7 +241,6 @@ export async function revokeConsent(
     return updated;
   });
 }
-
 
 export async function assertAppointmentHasSignedConsent(
   appointmentId: string,

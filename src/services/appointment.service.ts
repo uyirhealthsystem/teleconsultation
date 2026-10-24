@@ -1,3 +1,4 @@
+
 import {
   AppointmentStatus,
   BookingFor,
@@ -8,12 +9,14 @@ import { ApiError } from "../utils/ApiError.js";
 import { prisma } from "./prisma.service.js";
 
 const blockingStatuses: AppointmentStatus[] = [
+  AppointmentStatus.PENDING_PAYMENT,
   AppointmentStatus.PENDING,
   AppointmentStatus.CONFIRMED,
   AppointmentStatus.IN_PROGRESS,
 ];
 
 const cancellableStatuses: AppointmentStatus[] = [
+  AppointmentStatus.PENDING_PAYMENT,
   AppointmentStatus.PENDING,
   AppointmentStatus.CONFIRMED,
 ];
@@ -23,8 +26,6 @@ const MAX_APPOINTMENT_DURATION_MINUTES = 120;
 const MIN_APPOINTMENT_DURATION_MINUTES = 10;
 const MINUTES_IN_MS = 60_000;
 
-// Existing appointments can be at most 120 minutes long. Looking back this
-// far catches an appointment that began before the requested slot and overlaps it.
 const MAX_LOOKBACK_MS =
   MAX_APPOINTMENT_DURATION_MINUTES * MINUTES_IN_MS;
 
@@ -36,9 +37,8 @@ type AppointmentActor = {
 type AppointmentChangeActor = AppointmentActor;
 
 interface BookAppointmentInput {
-  // Kept temporarily for compatibility with the existing controller.
-  // SELF bookings derive patientId from the authenticated identity.
-  // Family/other-person bookings remain disabled until Citizen-service verification exists.
+  // Retained for compatibility with the existing controller.
+  // For SELF bookings, the authenticated user ID is authoritative.
   patientId: string;
   bookingFor: BookingFor;
   doctorId: string;
@@ -60,7 +60,6 @@ function badRequest(message: string): ApiError {
 }
 
 function getIndiaDateTime(date: string, time: string): Date {
-  // India does not observe daylight saving time (UTC+05:30).
   return new Date(`${date}T${time}:00+05:30`);
 }
 
@@ -87,8 +86,6 @@ function isValidCalendarDate(value: string): boolean {
 }
 
 function getDayOfWeekFromDate(date: string): number {
-  // Parse the calendar date as UTC so the server's local timezone cannot
-  // change the weekday. JavaScript uses Sunday=0 through Saturday=6.
   return new Date(`${date}T00:00:00.000Z`).getUTCDay();
 }
 
@@ -119,7 +116,10 @@ function getIndiaParts(date: Date): {
   const weekday = part("weekday");
 
   if (!year || !month || !day || !hour || !minute || !weekday) {
-    throw new ApiError(500, "Unable to determine India local date and time");
+    throw new ApiError(
+      500,
+      "Unable to determine India local date and time",
+    );
   }
 
   const weekdayNumber: Record<string, number> = {
@@ -132,10 +132,16 @@ function getIndiaParts(date: Date): {
     Sat: 6,
   };
 
+  const dayOfWeek = weekdayNumber[weekday];
+
+  if (dayOfWeek === undefined) {
+    throw new ApiError(500, "Unable to determine appointment weekday");
+  }
+
   return {
     localDate: `${year}-${month}-${day}`,
     localTime: `${hour}:${minute}`,
-    dayOfWeek: weekdayNumber[weekday],
+    dayOfWeek,
   };
 }
 
@@ -276,8 +282,6 @@ async function acquireDoctorBookingLock(
   tx: Prisma.TransactionClient,
   doctorId: string,
 ): Promise<void> {
-  // The CTE selects a result row while invoking PostgreSQL's transaction-scoped
-  // advisory lock. Booking and rescheduling use the same lock key.
   await tx.$queryRaw`
     WITH lock_result AS (
       SELECT pg_advisory_xact_lock(hashtext(${doctorId}))
@@ -440,6 +444,8 @@ export async function bookAppointment(
     reason,
   } = input;
 
+  const authenticatedUserId = bookedByUserId.trim();
+
   if (!doctorId?.trim()) {
     throw badRequest("doctorId is required");
   }
@@ -456,33 +462,36 @@ export async function bookAppointment(
     throw badRequest("Invalid consultation mode");
   }
 
+  // Resolve the actual patient from the authenticated identity.
+  // Do not trust a caller-supplied patientId for a self-booking.
+  let effectivePatientId: string;
+
+  if (bookingFor === BookingFor.SELF) {
+    effectivePatientId = authenticatedUserId;
+
+    if (patientId.trim() !== authenticatedUserId) {
+      throw new ApiError(
+        403,
+        "For SELF bookings, patientId must match the authenticated user",
+      );
+    }
+  } else if (bookingFor === BookingFor.FAMILY_MEMBER) {
+    // TODO: Integrate Citizen service and verify the family relationship.
+    throw new ApiError(
+      403,
+      "Family booking requires Citizen-service relationship verification",
+    );
+  } else if (bookingFor === BookingFor.OTHER_PERSON) {
+    throw new ApiError(
+      403,
+      "Booking for another person is not supported",
+    );
+  } else {
+    throw badRequest("Invalid booking type");
+  }
+
   const start = validateFutureDateTime(scheduledAt);
   validateDuration(durationMinutes);
-
-  const effectivePatientId = patientId.trim();
-
-  // if (bookingFor === BookingFor.SELF) {
-  //   if (effectivePatientId !== bookedByUserId.trim()) {
-  //     throw new ApiError(
-  //       403,
-  //       "For SELF bookings, patientId must match the logged-in citizen ID",
-  //     );
-  //   }
-  // } else if (bookingFor === BookingFor.FAMILY_MEMBER) {
-  //   // TODO: Integrate Citizen service here.
-  //   // Verify that effectivePatientId belongs to the logged-in citizen's
-  //   // family before allowing this appointment to be created.
-  //   throw new ApiError(
-  //     403,
-  //     "Family booking requires Citizen-service relationship verification",
-  //   );
-  // }
-  //  else {
-  //   throw new ApiError(
-  //     403,
-  //     "Booking for another person is not supported",
-  //   );
-  // }
 
   if (reason !== undefined && typeof reason !== "string") {
     throw badRequest("reason must be a string");
@@ -554,7 +563,7 @@ export async function bookAppointment(
 
       return tx.appointment.create({
         data: {
-          bookedByUserId: bookedByUserId.trim(),
+          bookedByUserId: authenticatedUserId,
           patientId: effectivePatientId,
           doctorId: doctorId.trim(),
           hospitalId,
@@ -563,7 +572,7 @@ export async function bookAppointment(
           durationMinutes,
           mode,
           reason: reason?.trim() || null,
-          status: AppointmentStatus.CONFIRMED,
+          status: AppointmentStatus.PENDING_PAYMENT,
         },
       });
     },
@@ -683,7 +692,7 @@ export async function cancelAppointment(
     if (!cancellableStatuses.includes(appointment.status)) {
       throw new ApiError(
         409,
-        "Only pending or confirmed appointments can be cancelled",
+        "Only unpaid, pending or confirmed appointments can be cancelled",
       );
     }
 
@@ -748,7 +757,7 @@ export async function rescheduleAppointment(
       if (!cancellableStatuses.includes(current.status)) {
         throw new ApiError(
           409,
-          "Only pending or confirmed appointments can be rescheduled",
+          "Only unpaid, pending or confirmed appointments can be rescheduled",
         );
       }
 
@@ -763,14 +772,12 @@ export async function rescheduleAppointment(
       }
 
       const newEnd = new Date(
-        newStart.getTime() + current.durationMinutes * MINUTES_IN_MS,
+        newStart.getTime() +
+          current.durationMinutes * MINUTES_IN_MS,
       );
 
-      // Use the same lock as booking so a booking and a reschedule cannot
-      // concurrently claim the same doctor's time slot.
       await acquireDoctorBookingLock(tx, current.doctorId);
 
-      // Reload after acquiring the lock to avoid acting on stale appointment data.
       const latest = await tx.appointment.findUnique({
         where: { appointmentId },
       });
@@ -852,8 +859,6 @@ export async function rescheduleAppointment(
         },
         data: {
           scheduledAt: newStart,
-          // Keep the same appointment ID and status. RESCHEDULED is not used
-          // as the active status because it could otherwise stop blocking the slot.
         },
       });
 

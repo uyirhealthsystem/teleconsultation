@@ -1,0 +1,15 @@
+
+{
+  "eventId": "test-signature-003",
+  "paymentId": "test-payment-003",
+  "referenceType": "TELECONSULTATION",
+  "referenceId": "nonexistent-appointment-test",
+  "bookingId": "nonexistent-appointment-test",
+  "payerId": "test-user",
+  "status": "FAILED",
+  "amount": 0,
+  "currency": "INR",
+  "refundedAmount": 0,
+  "failureReason": "Test event",
+  "occurredAt": "2026-10-23T11:00:00Z"
+}

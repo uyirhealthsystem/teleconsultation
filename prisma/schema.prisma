@@ -33,7 +33,7 @@ model Appointment {
   scheduledAt        DateTime
   durationMinutes    Int               @default(30)
   mode               ConsultationMode  @default(VIDEO)
-  status             AppointmentStatus @default(PENDING)
+  status             AppointmentStatus @default(PENDING_PAYMENT)
   reason             String?
   cancellationReason String?
   createdAt          DateTime          @default(now())
@@ -245,6 +245,31 @@ model Payment {
   @@index([status, createdAt])
 }
 
+model PaymentWebhookEvent {
+  eventId       String                    @id
+  paymentId     String
+  appointmentId String?
+  paymentStatus String
+  status        PaymentWebhookEventStatus @default(RECEIVED)
+  payload       Json
+  attempts      Int                       @default(0)
+  lastError     String?
+  processedAt   DateTime?
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+
+  @@index([paymentId, paymentStatus])
+  @@index([status, createdAt])
+  @@index([appointmentId])
+}
+
+enum PaymentWebhookEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
 enum PaymentProvider {
   RAZORPAY
 }
@@ -261,6 +286,7 @@ enum PaymentStatus {
 }
 
 enum AppointmentStatus {
+  PENDING_PAYMENT
   PENDING
   CONFIRMED
   CANCELLED

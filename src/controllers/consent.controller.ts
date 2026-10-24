@@ -3,10 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 
 import * as consentService from "../services/consent.service.js";
 
-import {
-  getRequestedLanguage,
-  translateResponse,
-} from "../utils/translate.response.js";
+import {getRequestedLanguage,translateResponse} from "../utils/translate.response.js";
 
 function getUser(req: Request) {
   const userId = req.header("x-user-id");

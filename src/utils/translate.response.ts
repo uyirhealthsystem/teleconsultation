@@ -6,7 +6,8 @@ const SUPPORTED_LANGUAGES = ["en", "ta", "te", "hi", "ml", "kn"];
 
 const TRANSLATABLE_FIELDS = new Set([
   "message",
-  // Patient and provider details
+  "signerName",
+  "signerRelationship",
   "name",
   "fullName",
   "address",
@@ -19,7 +20,7 @@ const TRANSLATABLE_FIELDS = new Set([
   "patientName",
   "patientSex",
   "sex",
-  // ECG booking details
+ 
   "patientNotes",
   "specialInstructions",
   "instructions",
@@ -28,12 +29,12 @@ const TRANSLATABLE_FIELDS = new Set([
   "cancellationReason",
   "rejectionReason",
 
-  // Provider and service details
+  
   "qualification",
   "specialization",
   "serviceName",
 
-  // ECG consent and report details
+  
   "consentMessage",
   "reportNotes",
   "remarks",

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import * as appointmentController from "../controllers/appointment.controller.js";
 import { requireUser } from "../middlewares/requireUser.middleware.js";
-
+import { retryPaymentController } from "../controllers/appointment.payment.controller.js";
 const router = Router();
 
 router.get("/availability/doctors/:doctorId", requireUser, appointmentController.getAvailableSlotsController);
@@ -13,4 +13,5 @@ router.patch("/:appointmentId/reschedule", requireUser, appointmentController.re
 
 router.get("/:appointmentId", requireUser, appointmentController.getAppointmentById);
 
+router.post("/appointment/:appointmentId/payment/retry",retryPaymentController);
 export default router
