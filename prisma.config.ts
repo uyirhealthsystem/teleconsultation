@@ -9,7 +9,8 @@ export default defineConfig({
     path: "prisma/migrations",
   },
 
+  // Migrations need a direct (non-pooled) connection when DATABASE_URL points at a pooler like Neon's.
   datasource: {
-    url: env("DATABASE_URL"),
+    url: process.env.DIRECT_URL || env("DATABASE_URL"),
   },
 });
