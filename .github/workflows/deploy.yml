@@ -64,18 +64,33 @@ jobs:
         with:
           name: release
 
-      # Every secret except the EC2_* connection secrets becomes a line in the server's .env.
-      - name: Build .env from secrets
+      # The server's .env is built from, in order (later wins):
+      #   1. every Actions variable (Settings > Secrets and variables > Variables)
+      #   2. every Actions secret, except EC2_* connection secrets and ENV_FILE
+      #   3. ENV_FILE secret, if set: raw contents of a .env file, appended as-is
+      - name: Build .env from secrets and variables
         env:
           SECRETS_JSON: ${{ toJSON(secrets) }}
+          VARS_JSON: ${{ toJSON(vars) }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
         run: |
-          jq -r '
-            to_entries[]
-            | select(.key | test("^(EC2_.*|GITHUB_TOKEN|github_token)$") | not)
+          jq -rn --argjson v "$VARS_JSON" --argjson s "$SECRETS_JSON" '
+            ($v + $s)
+            | to_entries[]
+            | select(.key | test("^(EC2_.*|ENV_FILE|GITHUB_TOKEN|github_token)$") | not)
             | "\(.key)=\(.value | @json)"
-          ' <<< "$SECRETS_JSON" > .env
+          ' > .env
+          if [ -n "$ENV_FILE" ]; then printf '\n%s\n' "$ENV_FILE" | tr -d '\r' >> .env; fi
           grep -q '^NODE_ENV=' .env || echo 'NODE_ENV="production"' >> .env
-          echo "Writing $(wc -l < .env) variables: $(cut -d= -f1 .env | paste -sd, -)"
+
+          NAMES="$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d = | sort -u | paste -sd, -)"
+          echo "Variables written to .env: $NAMES"
+          for required in DATABASE_URL HMS_ACCESS_KEY HMS_SECRET; do
+            if ! grep -qE "^$required=.+" .env; then
+              echo "::error::$required is missing. Add it under Settings > Secrets and variables > Actions (as a repository secret, a variable, or inside an ENV_FILE secret)."
+              exit 1
+            fi
+          done
 
       - name: Configure SSH
         env:
