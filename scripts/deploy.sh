@@ -26,7 +26,11 @@ npx prisma migrate deploy
 echo "==> Pruning dev dependencies"
 npm prune --omit=dev --no-audit --no-fund
 
-PREVIOUS="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+PREVIOUS=""
+if [ -L "$CURRENT_LINK" ]; then
+  PREVIOUS="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+fi
+[ "$PREVIOUS" = "$RELEASE_DIR" ] && PREVIOUS=""
 
 start_app() {
   ln -sfn "$1" "$CURRENT_LINK"
