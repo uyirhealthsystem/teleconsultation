@@ -1,5 +1,5 @@
 
-import HMS from "@100mslive/server-sdk";
+import { SDK } from "@100mslive/server-sdk";
 
 const accessKey = process.env.HMS_ACCESS_KEY;
 const appSecret = process.env.HMS_SECRET;
@@ -10,4 +10,4 @@ if (!accessKey || !appSecret) {
   );
 }
 
-export const hms = new HMS.SDK(accessKey, appSecret);
+export const hms = new SDK(accessKey, appSecret);

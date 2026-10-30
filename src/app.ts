@@ -5,6 +5,7 @@ import pinoHttp from 'pino-http';
 import { errorHandler } from './middlewares/error.middleware';
 import { notFoundHandler } from './middlewares/notFound.middleware';
 import paymentWebhookRoutes from './routes/payment.webhook.routes.js';
+import healthRoutes from './routes/health.route';
 
 import routes from './routes';
 import { logger } from './utils/logger';
@@ -28,9 +29,7 @@ export function createApp(): Application {
   app.use(pinoHttp({ logger }));
 
   // Used by the deploy pipeline to decide whether to keep or roll back a release
-  app.get('/health', (_req, res) => {
-    res.json({ status: 'ok' });
-  });
+  app.use('/health', healthRoutes);
 
   app.use('/api/teleconsultation/payments/webhook', paymentWebhookRoutes);
   app.use('/api/v1/teleconsultation', routes);
