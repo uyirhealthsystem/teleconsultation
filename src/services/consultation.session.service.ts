@@ -529,11 +529,11 @@ export async function provisionConsultationSessionForPaidAppointment(
       async (tx) => {
         // Serialize provisioning attempts for this appointment
         // across concurrent requests and backend instances.
-        await tx.$queryRaw`
-          SELECT pg_advisory_xact_lock(
-            hashtext(${appointmentId})::bigint
-          )
-        `;
+        await tx.$executeRaw`
+  SELECT pg_advisory_xact_lock(
+    hashtext(${appointmentId})::bigint
+  )
+`;
 
         const appointment = await tx.appointment.findUnique({
           where: { appointmentId },
