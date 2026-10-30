@@ -3,7 +3,8 @@ import {ConsentType,SessionStatus} from "../generated/prisma/client.js";
 import { prisma } from "./prisma.service.js";
 import { assertAppointmentHasSignedConsent } from "./consent.service.js";
 import { ApiError } from "../utils/ApiError.js";
-import { hms } from "./hms.service.js";
+import { generateHmsAuthToken ,hms } from "./hms.service.js";
+
 
 const ELIGIBLE_APPOINTMENT_STATUSES = [
   "CONFIRMED",
@@ -224,15 +225,26 @@ export async function checkInPatient(
   appointmentId: string,
   actor: SessionActor,
 ) {
-  const { isPatient } = await authorizeAppointment(
-    appointmentId,
-    actor,
-  );
+  const {
+    isPatient,
+    isBooker,
+    appointment,
+  } = await authorizeAppointment(appointmentId, actor);
 
-  if (!isPatient) {
+  // The patient can check in directly.
+  // For family bookings, the person who booked can check in
+  // on behalf of the family member.
+  const canCheckIn =
+    isPatient ||
+    (
+      isBooker &&
+      appointment.bookingFor === "FAMILY_MEMBER"
+    );
+
+  if (!canCheckIn) {
     throw new ApiError(
       403,
-      "Only the patient can check in",
+      "Only the patient or authorized family booker can check in",
     );
   }
 
@@ -620,4 +632,64 @@ export async function provisionConsultationSessionForPaidAppointment(
   }
 }
 
+export async function generateConsultationJoinToken(
+  appointmentId: string,
+  actor: SessionActor,
+) {
+  const {
+    isDoctor,
+    isPatient,
+    isBooker,
+    appointment,
+  } = await authorizeAppointment(appointmentId, actor);
+
+  const session = await prisma.consultationSession.findUnique({
+    where: { appointmentId },
+  });
+
+  if (!session) {
+    throw new ApiError(
+      404,
+      "Consultation session has not been created",
+    );
+  }
+
+  if (
+    session.status === SessionStatus.ENDED ||
+    session.status === SessionStatus.FAILED
+  ) {
+    throw new ApiError(
+      409,
+      "This consultation session is already closed",
+    );
+  }
+
+  if (!isDoctor && !isPatient && !isBooker) {
+    throw new ApiError(
+      403,
+      "You are not authorized to join this consultation",
+    );
+  }
+
+  if (!isDoctor && !session.waitingStartedAt) {
+    throw new ApiError(
+      409,
+      "Patient must check in before joining the consultation",
+    );
+  }
+
+  const role = isDoctor ? "host" : "guest";
+
+  const token = await generateHmsAuthToken(
+    session.meetingRoomId,
+    actor.userId,
+    role,
+  );
+
+  return {
+    token,
+    roomId: session.meetingRoomId,
+    role,
+  };
+}
 

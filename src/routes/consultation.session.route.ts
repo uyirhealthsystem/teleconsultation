@@ -8,6 +8,7 @@ import {
   doctorMarkDelay,
   doctorStartConsultation,
   doctorEndConsultation,
+  generateJoinToken
 } from "../controllers/consultation.session.controller.js";
 
 const router = Router();
@@ -20,6 +21,11 @@ const router = Router();
 router.get(
   "/appointments/:appointmentId/sessions",
   getSession,
+);
+
+router.post(
+  "/appointments/:appointmentId/session/join-token",
+  generateJoinToken,
 );
 
 router.post(

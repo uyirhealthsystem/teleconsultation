@@ -14,6 +14,7 @@ import {
   markDoctorDelayed,
   startConsultation,
   endConsultation,
+  generateConsultationJoinToken
 } from "../services/consultation.session.service.js";
 
 import type { SessionActor } from "../services/consultation.session.service.js";
@@ -163,6 +164,26 @@ export const doctorEndConsultation = asyncHandler(
         language,
       ),
       data: await translateResponse(session, language),
+    });
+  },
+);
+
+export const generateJoinToken = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await generateConsultationJoinToken(
+      getAppointmentId(req),
+      getActor(req),
+    );
+
+    const language = getRequestedLanguage(req);
+
+    res.status(200).json({
+      success: true,
+      message: await translateResponse(
+        "Meeting token generated successfully",
+        language,
+      ),
+      data: result,
     });
   },
 );
