@@ -421,6 +421,7 @@ export async function getAvailableSlots(
   return slots;
 }
 
+
 export async function bookAppointment(
   bookedByUserId: string,
   input: BookAppointmentInput,
@@ -462,11 +463,11 @@ export async function bookAppointment(
     throw badRequest("Invalid consultation mode");
   }
 
-  // Resolve the actual patient from the authenticated identity.
-  // Do not trust a caller-supplied patientId for a self-booking.
+  // Resolve patient identity.
   let effectivePatientId: string;
 
   if (bookingFor === BookingFor.SELF) {
+    // SELF booking: authenticated user is always the patient.
     effectivePatientId = authenticatedUserId;
 
     if (patientId.trim() !== authenticatedUserId) {
@@ -476,11 +477,15 @@ export async function bookAppointment(
       );
     }
   } else if (bookingFor === BookingFor.FAMILY_MEMBER) {
-    // TODO: Integrate Citizen service and verify the family relationship.
-    throw new ApiError(
-      403,
-      "Family booking requires Citizen-service relationship verification",
-    );
+    // TEMPORARY DEMO SUPPORT.
+    // Citizen-service relationship verification will be added later.
+    if (patientId.trim() === authenticatedUserId) {
+      throw badRequest(
+        "For FAMILY_MEMBER bookings, provide the family member's patientId",
+      );
+    }
+
+    effectivePatientId = patientId.trim();
   } else if (bookingFor === BookingFor.OTHER_PERSON) {
     throw new ApiError(
       403,
@@ -572,7 +577,7 @@ export async function bookAppointment(
           durationMinutes,
           mode,
           reason: reason?.trim() || null,
-          status: AppointmentStatus.PENDING_PAYMENT,
+          status: AppointmentStatus.PENDING,
         },
       });
     },
@@ -583,6 +588,8 @@ export async function bookAppointment(
     },
   );
 }
+
+
 
 export async function listMyAppointments(
   actor: AppointmentActor,
@@ -603,25 +610,36 @@ export async function listMyAppointments(
 
   const role = normalizeRole(actor.role);
 
-  const where: Prisma.AppointmentWhereInput =
-    role === "DOCTOR"
-      ? { doctorId: actor.userId }
-      : {
-          OR: [
-            { bookedByUserId: actor.userId },
-            { patientId: actor.userId },
-          ],
-        };
+  let where: Prisma.AppointmentWhereInput;
 
-  const [appointments, total] = await prisma.$transaction([
-    prisma.appointment.findMany({
-      where,
-      orderBy: { scheduledAt: "desc" },
-      skip: (page - 1) * limit,
-      take: limit,
-    }),
-    prisma.appointment.count({ where }),
-  ]);
+  if (role === "DOCTOR") {
+    where = {
+      doctorId: actor.userId,
+    };
+  } else if (role === "PATIENT" || role === "CITIZEN") {
+    where = {
+      OR: [
+        { bookedByUserId: actor.userId },
+        { patientId: actor.userId },
+      ],
+    };
+  } else {
+    throw new ApiError(403, "You are not allowed to view appointments");
+  }
+
+  // Fetch appointments without opening a database transaction.
+  const appointments = await prisma.appointment.findMany({
+    where,
+    orderBy: {
+      scheduledAt: "desc",
+    },
+    skip: (page - 1) * limit,
+    take: limit,
+  });
+
+  const total = await prisma.appointment.count({
+    where,
+  });
 
   return {
     appointments,
@@ -633,6 +651,8 @@ export async function listMyAppointments(
     },
   };
 }
+
+
 
 export async function getAppointmentDetails(
   appointmentId: string,
@@ -879,4 +899,148 @@ export async function rescheduleAppointment(
       timeout: 30_000,
     },
   );
+}
+
+
+export async function listPendingDoctorAppointments(
+  actor: AppointmentActor,
+  page = 1,
+  limit = 20,
+) {
+  validateActor(actor);
+
+  if (normalizeRole(actor.role) !== "DOCTOR") {
+    throw new ApiError(403, "Only doctors can view pending appointments");
+  }
+
+  if (
+    !Number.isInteger(page) ||
+    !Number.isInteger(limit) ||
+    page < 1 ||
+    limit < 1 ||
+    limit > 100
+  ) {
+    throw badRequest("Invalid page or limit");
+  }
+
+  const where: Prisma.AppointmentWhereInput = {
+    doctorId: actor.userId,
+    status: AppointmentStatus.PENDING,
+  };
+
+  const [appointments, total] = await Promise.all([
+    prisma.appointment.findMany({
+      where,
+      orderBy: { scheduledAt: "asc" },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.appointment.count({ where }),
+  ]);
+
+  return {
+    appointments,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    },
+  };
+}
+
+export async function confirmAppointment(
+  appointmentId: string,
+  actor: AppointmentActor,
+) {
+  validateActor(actor);
+
+  if (normalizeRole(actor.role) !== "DOCTOR") {
+    throw new ApiError(403, "Only doctors can confirm appointments");
+  }
+
+  if (!appointmentId?.trim()) {
+    throw badRequest("appointmentId is required");
+  }
+
+  const result = await prisma.appointment.updateMany({
+    where: {
+      appointmentId,
+      doctorId: actor.userId,
+      status: AppointmentStatus.PENDING,
+    },
+    data: {
+      status: AppointmentStatus.CONFIRMED,
+    },
+  });
+
+  if (result.count !== 1) {
+    const appointment = await prisma.appointment.findUnique({
+      where: { appointmentId },
+    });
+
+    if (!appointment || appointment.doctorId !== actor.userId) {
+      throw new ApiError(404, "Appointment not found");
+    }
+
+    throw new ApiError(
+      409,
+      "Appointment cannot be confirmed in its current status",
+    );
+  }
+
+  return prisma.appointment.findUniqueOrThrow({
+    where: { appointmentId },
+  });
+}
+
+export async function rejectAppointment(
+  appointmentId: string,
+  actor: AppointmentActor,
+  reason: string,
+) {
+  validateActor(actor);
+
+  if (normalizeRole(actor.role) !== "DOCTOR") {
+    throw new ApiError(403, "Only doctors can reject appointments");
+  }
+
+  if (!appointmentId?.trim()) {
+    throw badRequest("appointmentId is required");
+  }
+
+  if (!reason?.trim() || reason.trim().length > 500) {
+    throw badRequest("Rejection reason is required (maximum 500 characters)");
+  }
+
+  const result = await prisma.appointment.updateMany({
+    where: {
+      appointmentId,
+      doctorId: actor.userId,
+      status: AppointmentStatus.PENDING,
+    },
+    data: {
+      status: AppointmentStatus.REJECTED,
+      cancellationReason: reason.trim(),
+    },
+  });
+
+  if (result.count !== 1) {
+    const appointment = await prisma.appointment.findUnique({
+      where: { appointmentId },
+    });
+
+    if (!appointment || appointment.doctorId !== actor.userId) {
+      throw new ApiError(404, "Appointment not found");
+    }
+
+    throw new ApiError(
+      409,
+      "Appointment cannot be rejected in its current status",
+    );
+  }
+
+  return prisma.appointment.findUniqueOrThrow({
+    where: { appointmentId },
+  });
 }

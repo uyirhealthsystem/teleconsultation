@@ -3,7 +3,9 @@ import type { Request, Response , NextFunction  } from "express";
 import {BookingFor,ConsultationMode,} from "../generated/prisma/client.js";
 import type { AuthenticatedRequest } from "../middlewares/requireUser.middleware.js";
 import {bookAppointment,getAvailableSlots,listMyAppointments,getAppointmentDetails,cancelAppointment,
-  rescheduleAppointment,} from "../services/appointment.service.js";
+  rescheduleAppointment,  listPendingDoctorAppointments,
+  confirmAppointment,
+  rejectAppointment,} from "../services/appointment.service.js";
 import {getRequestedLanguage,translateResponse} from "../utils/translate.response";
 import { ApiError } from "../utils/ApiError.js";
 import {
@@ -146,7 +148,7 @@ export async function bookAppointmentController(
         message,
         data: {
           appointmentId: appointment.appointmentId,
-          appointmentStatus: "PENDING_PAYMENT",
+          appointmentStatus: "PENDING",
         },
       });
       return;
@@ -320,3 +322,100 @@ export async function rescheduleAppointmentController(
     next(error);
   }
 }
+
+
+export async function getPendingDoctorAppointments(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const authReq = req as AuthenticatedRequest;
+
+    if (!authReq.userId || !authReq.userRole) {
+      throw new ApiError(401, "Authentication required");
+    }
+
+    const page = Number(req.query.page ?? 1);
+    const limit = Number(req.query.limit ?? 20);
+
+    const result = await listPendingDoctorAppointments(
+      {
+        userId: authReq.userId,
+        role: authReq.userRole,
+      },
+      page,
+      limit,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Pending appointments retrieved successfully",
+      data: result.appointments,
+      pagination: result.pagination,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function confirmAppointmentController(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const authReq = req as AuthenticatedRequest;
+
+    const appointment = await confirmAppointment(
+      authReq.params.appointmentId as string,
+      {
+        userId: authReq.userId,
+        role: authReq.userRole,
+      },
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Appointment confirmed successfully",
+      data: appointment,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function rejectAppointmentController(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const { reason } = req.body;
+
+    if (typeof reason !== "string" || !reason.trim()) {
+      throw new ApiError(400, "Rejection reason is required");
+    }
+
+    const appointment = await rejectAppointment(
+      authReq.params.appointmentId as string,
+      {
+        userId: authReq.userId,
+        role: authReq.userRole,
+      },
+      reason,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Appointment rejected successfully",
+      data: appointment,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+
+

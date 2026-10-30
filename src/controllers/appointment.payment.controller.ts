@@ -1,19 +1,27 @@
 
 import type { Request, Response } from "express";
+import type { AuthenticatedRequest } from "../middlewares/requireUser.middleware.js";
+
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { retryAppointmentPayment } from "../services/appointment.payment.service.js";
+import { ApiError } from "../utils/ApiError.js";
 
 export const retryPaymentController = asyncHandler(
   async (req: Request, res: Response) => {
-    const userId = req.headers["x-user-id"];
+    const authReq = req as AuthenticatedRequest;
+
+    const userId = authReq.userId;
     const authorizationHeader = req.headers.authorization;
 
-    if (typeof userId !== "string" || !userId.trim()) {
-      res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
-      return;
+    if (!userId?.trim()) {
+      throw new ApiError(401, "Authentication required");
+    }
+
+    if (
+      typeof authorizationHeader !== "string" ||
+      !authorizationHeader.startsWith("Bearer ")
+    ) {
+      throw new ApiError(401, "Valid access token is required");
     }
 
     const payment = await retryAppointmentPayment(

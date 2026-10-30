@@ -6,12 +6,29 @@ const router = Router();
 
 router.get("/availability/doctors/:doctorId", requireUser, appointmentController.getAvailableSlotsController);
 router.post("/appointment", requireUser, appointmentController.bookAppointmentController);
-router.get("/me", requireUser, appointmentController.getMyAppointments);
+router.get("/appointments/me", requireUser, appointmentController.getMyAppointments);
 
 router.patch("/:appointmentId/cancel", requireUser, appointmentController.cancelAppointmentController);
 router.patch("/:appointmentId/reschedule", requireUser, appointmentController.rescheduleAppointmentController);
 
 router.get("/:appointmentId", requireUser, appointmentController.getAppointmentById);
 
-router.post("/appointment/:appointmentId/payment/retry",retryPaymentController);
+router.post("/appointment/:appointmentId/payment/retry",requireUser,retryPaymentController);
+router.get(
+  "/appointments/doctor/pending",
+  requireUser,
+  appointmentController.getPendingDoctorAppointments,
+);
+
+router.patch(
+  "/appointments/:appointmentId/confirm",
+  requireUser,
+  appointmentController.confirmAppointmentController,
+);
+
+router.patch(
+  "/appointments/:appointmentId/reject",
+  requireUser,
+  appointmentController.rejectAppointmentController,
+);
 export default router

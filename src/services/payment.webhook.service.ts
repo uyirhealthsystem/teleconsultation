@@ -102,6 +102,7 @@ export async function processPaymentWebhook(input: unknown) {
   const payload = validatePaymentWebhookPayload(input);
   const appointmentId = payload.referenceId;
 
+  // 1. Verify appointment exists.
   const appointment = await prisma.appointment.findUnique({
     where: { appointmentId },
     select: {
@@ -115,23 +116,31 @@ export async function processPaymentWebhook(input: unknown) {
     throw new ApiError(404, "Referenced appointment was not found");
   }
 
-  // Never accept a payment event from a different payer.
+  // 2. Verify payer.
   if (payload.payerId !== appointment.bookedByUserId) {
-    throw new ApiError(403, "Payment payer does not match appointment booker");
+    throw new ApiError(
+      403,
+      "Payment payer does not match appointment booker",
+    );
   }
 
-  // The payment service reports amounts in INR, not paise.
+  // 3. Verify currency.
   if (payload.currency.toUpperCase() !== "INR") {
     throw new ApiError(400, "Payment currency must be INR");
   }
 
+  // 4. Verify successful payment amount.
   if (
     payload.status === "PAID" &&
     toPaise(payload.amount) !== getExpectedAmountPaise()
   ) {
-    throw new ApiError(400, "Payment amount does not match consultation fee");
+    throw new ApiError(
+      400,
+      "Payment amount does not match consultation fee",
+    );
   }
 
+  // 5. Check whether this event was already received.
   const existingEvent = await prisma.paymentWebhookEvent.findUnique({
     where: { eventId: payload.eventId },
   });
@@ -157,6 +166,7 @@ export async function processPaymentWebhook(input: unknown) {
     }
   }
 
+  // 6. Create the event if it does not exist.
   await prisma.paymentWebhookEvent.upsert({
     where: { eventId: payload.eventId },
     create: {
@@ -168,20 +178,23 @@ export async function processPaymentWebhook(input: unknown) {
       payload: payload as unknown as Prisma.InputJsonValue,
       attempts: 0,
     },
-    update: {
-      payload: payload as unknown as Prisma.InputJsonValue,
-    },
+    update: {},
   });
 
-  // Atomically claim this event to prevent concurrent processing.
+  // 7. Atomically claim the event.
+  // Only RECEIVED or FAILED events can be processed.
   const claim = await prisma.paymentWebhookEvent.updateMany({
     where: {
       eventId: payload.eventId,
-      status: { in: ["RECEIVED", "FAILED"] },
+      status: {
+        in: ["RECEIVED", "FAILED"],
+      },
     },
     data: {
       status: "PROCESSING",
-      attempts: { increment: 1 },
+      attempts: {
+        increment: 1,
+      },
       lastError: null,
     },
   });
@@ -199,49 +212,59 @@ export async function processPaymentWebhook(input: unknown) {
       };
     }
 
-    throw new ApiError(503, "Payment event is already being processed");
+    throw new ApiError(
+      503,
+      "Payment event is already being processed",
+    );
   }
 
   try {
+    // 8. Handle successful payment.
     if (payload.status === "PAID") {
-      // A previous FAILED payment event must not prevent a later
-      // successful payment. However, cancelled appointments cannot
-      // be confirmed automatically.
       const currentAppointment = await prisma.appointment.findUnique({
         where: { appointmentId },
-        select: { status: true },
+        select: {
+          appointmentId: true,
+          status: true,
+        },
       });
 
       if (!currentAppointment) {
-        throw new ApiError(404, "Referenced appointment was not found");
-      }
-
-      if (currentAppointment.status === "PENDING_PAYMENT") {
-        await prisma.appointment.updateMany({
-          where: {
-            appointmentId,
-            status: "PENDING_PAYMENT",
-          },
-          data: {
-            status: "CONFIRMED",
-          },
-        });
-      } else if (currentAppointment.status !== "CONFIRMED") {
         throw new ApiError(
-          409,
-          `Cannot confirm appointment with status ${currentAppointment.status}`,
+          404,
+          "Referenced appointment was not found",
         );
       }
 
-      // Provision only after the appointment is confirmed.
-      // This function should itself be idempotent by appointmentId.
-      await provisionConsultationSessionForPaidAppointment(
-        appointmentId,
+      // Appointment must already be confirmed by the doctor.
+      if (currentAppointment.status !== "CONFIRMED") {
+        throw new ApiError(
+          409,
+          `Payment cannot be processed for appointment with status ${currentAppointment.status}`,
+        );
+      }
+
+      // 9. Provision 100ms consultation session.
+      // This function must remain idempotent.
+      const session =
+        await provisionConsultationSessionForPaidAppointment(
+          appointmentId,
+        );
+
+      console.log(
+        "[PAYMENT WEBHOOK] Consultation session provisioned",
+        {
+          appointmentId,
+          sessionId: session.sessionId,
+          meetingRoomId: session.meetingRoomId,
+        },
       );
     }
 
-    // FAILED payment events are recorded but do not cancel the
-    // appointment; a later PAID event may arrive.
+    // 10. FAILED payment events are recorded.
+    // They do not cancel the appointment.
+    // A later successful payment can still be processed.
+
     await prisma.paymentWebhookEvent.update({
       where: { eventId: payload.eventId },
       data: {
@@ -251,21 +274,36 @@ export async function processPaymentWebhook(input: unknown) {
       },
     });
 
+    console.log("[PAYMENT WEBHOOK] Event processed successfully", {
+      eventId: payload.eventId,
+      paymentId: payload.paymentId,
+      appointmentId,
+      paymentStatus: payload.status,
+    });
+
     return {
       duplicate: false,
       eventId: payload.eventId,
       status: "PROCESSED",
     };
   } catch (error) {
+    const errorMessage =
+      error instanceof Error
+        ? error.message
+        : "Unknown payment webhook processing error";
+
     await prisma.paymentWebhookEvent.update({
       where: { eventId: payload.eventId },
       data: {
         status: "FAILED",
-        lastError:
-          error instanceof Error
-            ? error.message
-            : "Unknown payment webhook processing error",
+        lastError: errorMessage,
       },
+    });
+
+    console.error("[PAYMENT WEBHOOK] Processing failed", {
+      eventId: payload.eventId,
+      appointmentId,
+      error: errorMessage,
     });
 
     throw error;

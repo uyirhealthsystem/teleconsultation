@@ -16,7 +16,7 @@ export function createApp(): Application {
   app.use(helmet());
   app.use(cors());
   // app.use(express.json());
-  app.use(
+ app.use(
   express.json({
     verify: (req, _res, buf) => {
       (req as express.Request & { rawBody?: Buffer }).rawBody =
@@ -32,7 +32,7 @@ export function createApp(): Application {
     res.json({ status: 'ok' });
   });
 
-  app.use('/api/v1/webhooks/payments', paymentWebhookRoutes);
+  app.use('/api/teleconsultation/payments/webhook', paymentWebhookRoutes);
   app.use('/api/v1/teleconsultation', routes);
 
   app.use(notFoundHandler);

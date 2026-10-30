@@ -31,19 +31,27 @@ export async function retryAppointmentPayment(
     throw new ApiError(404, "Appointment not found");
   }
 
+  // Only the citizen who booked the appointment can pay.
   if (appointment.bookedByUserId !== userId) {
-    throw new ApiError(403, "You cannot retry payment for this appointment");
+    throw new ApiError(
+      403,
+      "You cannot make payment for this appointment",
+    );
   }
 
-  if (appointment.status !== AppointmentStatus.PENDING_PAYMENT) {
+  // Payment is allowed only after doctor confirmation.
+  if (appointment.status !== AppointmentStatus.CONFIRMED) {
     throw new ApiError(
       409,
-      "Payment can only be retried for appointments awaiting payment",
+      "Payment is allowed only after the doctor confirms the appointment",
     );
   }
 
   if (appointment.scheduledAt <= new Date()) {
-    throw new ApiError(409, "Appointment time has already passed");
+    throw new ApiError(
+      409,
+      "Appointment time has already passed",
+    );
   }
 
   return createTeleconsultationPaymentIntent({

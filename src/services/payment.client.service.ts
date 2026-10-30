@@ -152,12 +152,14 @@ export async function createTeleconsultationPaymentIntent(
       );
     }
 
-    if (response.status === 401 || response.status === 403) {
-      throw new ApiError(
-        502,
-        "Payment Service rejected the user authentication",
-      );
-    }
+   if (response.status === 401 || response.status === 403) {
+  throw new ApiError(
+    response.status === 401 ? 401 : 403,
+    response.status === 401
+      ? "Payment Service rejected the access token"
+      : "Payment Service denied access to this payment operation",
+  );
+}
 
     if (response.status === 409) {
       throw new ApiError(
