@@ -1,20 +1,95 @@
 
 import type { Request, Response, NextFunction } from "express";
+
 import {
   createDoctorAvailability,
   getDoctorAvailability,
   updateDoctorAvailability,
   updateDoctorAvailabilityStatus,
 } from "../services/doctoravailability.service.js";
+
 import { getAvailableSlots } from "../services/appointment.service.js";
 
+// CREATE DOCTOR AVAILABILITY
 export async function createAvailability(
   req: Request,
   res: Response,
   next: NextFunction,
 ) {
   try {
-    const availability = await createDoctorAvailability(req.body);
+    const {
+      doctorId,
+      days,
+      dayOfWeek,
+      startTime,
+      endTime,
+      slotDurationMinutes,
+      hospitalId,
+    } = req.body;
+
+    if (!doctorId || typeof doctorId !== "string" || !doctorId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "doctorId is required",
+      });
+      return;
+    }
+
+    // Support both days and dayOfWeek
+    // Accept single number or array
+    const rawDays = days !== undefined ? days : dayOfWeek;
+
+    const selectedDays =
+      rawDays === undefined
+        ? []
+        : Array.isArray(rawDays)
+          ? rawDays
+          : [rawDays];
+
+    if (
+      selectedDays.length === 0 ||
+      selectedDays.some(
+        (day: unknown) =>
+          typeof day !== "number" ||
+          !Number.isInteger(day) ||
+          day < 0 ||
+          day > 6,
+      )
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "days must contain integer values between 0 and 6",
+      });
+      return;
+    }
+
+    if (new Set(selectedDays).size !== selectedDays.length) {
+      res.status(400).json({
+        success: false,
+        message: "Duplicate days are not allowed",
+      });
+      return;
+    }
+
+    if (
+      typeof startTime !== "string" ||
+      typeof endTime !== "string"
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "startTime and endTime are required",
+      });
+      return;
+    }
+
+    const availability = await createDoctorAvailability({
+      doctorId,
+      hospitalId,
+      days: selectedDays,
+      startTime,
+      endTime,
+      slotDurationMinutes,
+    });
 
     res.status(201).json({
       success: true,
@@ -26,6 +101,7 @@ export async function createAvailability(
   }
 }
 
+// GET DOCTOR AVAILABILITY
 export async function getAvailability(
   req: Request,
   res: Response,
@@ -33,6 +109,7 @@ export async function getAvailability(
 ) {
   try {
     const doctorId = req.params.doctorId as string;
+
     const availability = await getDoctorAvailability(doctorId);
 
     res.status(200).json({
@@ -44,6 +121,7 @@ export async function getAvailability(
   }
 }
 
+// UPDATE DOCTOR AVAILABILITY
 export async function updateAvailability(
   req: Request,
   res: Response,
@@ -65,6 +143,7 @@ export async function updateAvailability(
   }
 }
 
+// ACTIVATE / DEACTIVATE AVAILABILITY
 export async function changeAvailabilityStatus(
   req: Request,
   res: Response,
@@ -96,6 +175,7 @@ export async function changeAvailabilityStatus(
   }
 }
 
+// GET AVAILABLE APPOINTMENT SLOTS
 export async function getAvailabilitySlots(
   req: Request,
   res: Response,
@@ -103,7 +183,6 @@ export async function getAvailabilitySlots(
 ) {
   try {
     const doctorId = req.params.doctorId as string;
-    
     const date = req.query.date;
 
     if (typeof date !== "string") {

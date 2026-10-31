@@ -6,7 +6,7 @@ import {createNote,getNote,updateNote,finalizeNote} from "../controllers/consult
 const router = Router();
 
 router.post(
-  "/appointments/:appointmentId/note",
+  "/appointments/:appointmentId/notes",
   createNote,
 );
 
