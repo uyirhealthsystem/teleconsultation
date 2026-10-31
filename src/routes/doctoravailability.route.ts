@@ -12,10 +12,10 @@ const router = Router();
 
 router.post("/doctoravailability", createAvailability);
 
-router.get("/:doctorId/slots", getAvailabilitySlots);
+router.get("/availability/doctors/:doctorId/slots", getAvailabilitySlots);
 router.get("/:doctorId", getAvailability);
 
-router.put("/:availabilityId", updateAvailability);
-router.patch("/:availabilityId/status", changeAvailabilityStatus);
+router.put("/doctoravailability/:availabilityId", updateAvailability);
+router.patch("/doctoravailability/:availabilityId/status", changeAvailabilityStatus);
 
 export default router;

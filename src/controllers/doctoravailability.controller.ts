@@ -176,6 +176,7 @@ export async function changeAvailabilityStatus(
 }
 
 // GET AVAILABLE APPOINTMENT SLOTS
+// GET AVAILABLE APPOINTMENT SLOTS
 export async function getAvailabilitySlots(
   req: Request,
   res: Response,
@@ -185,18 +186,35 @@ export async function getAvailabilitySlots(
     const doctorId = req.params.doctorId as string;
     const date = req.query.date;
 
-    if (typeof date !== "string") {
+    let selectedDate: string;
+
+    if (date === undefined) {
+      // Default to today's date
+      const today = new Date();
+
+      selectedDate = [
+        today.getFullYear(),
+        String(today.getMonth() + 1).padStart(2, "0"),
+        String(today.getDate()).padStart(2, "0"),
+      ].join("-");
+    } else if (typeof date === "string") {
+      selectedDate = date;
+    } else {
       res.status(400).json({
         success: false,
-        message: "date query parameter is required (YYYY-MM-DD)",
+        message: "Invalid date query parameter",
       });
       return;
     }
 
-    const slots = await getAvailableSlots(doctorId, date);
+    const slots = await getAvailableSlots(
+      doctorId,
+      selectedDate,
+    );
 
     res.status(200).json({
       success: true,
+      message: "Available slots fetched successfully",
       data: slots,
     });
   } catch (error) {

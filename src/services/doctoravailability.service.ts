@@ -15,6 +15,7 @@ interface CreateAvailabilityInput {
 interface UpdateAvailabilityInput {
   doctorId?: string;
   hospitalId?: string;
+  days?: number | number[];
   dayOfWeek?: number;
   startTime?: string;
   endTime?: string;
@@ -79,7 +80,6 @@ export async function createDoctorAvailability(
     throw new ApiError(400, "doctorId is required");
   }
 
-  // Accept either days: 4, days: [4], or days: [1,2,3,4,5,6]
   const days =
     input.days === undefined
       ? input.dayOfWeek !== undefined
@@ -113,7 +113,6 @@ export async function createDoctorAvailability(
 
   const duration = input.slotDurationMinutes ?? 30;
 
-  // Validate common availability details
   validateAvailability({
     dayOfWeek: days[0],
     startTime: input.startTime,
@@ -136,16 +135,21 @@ export async function createDoctorAvailability(
     );
   }
 
-  return prisma.doctorAvailability.createMany({
-    data: days.map((dayOfWeek) => ({
-      doctorId: input.doctorId,
-      hospitalId: input.hospitalId,
-      dayOfWeek,
-      startTime: input.startTime,
-      endTime: input.endTime,
-      slotDurationMinutes: duration,
-    })),
-  });
+  // Create individual records and return their availabilityIds.
+  return prisma.$transaction(
+    days.map((dayOfWeek) =>
+      prisma.doctorAvailability.create({
+        data: {
+          doctorId: input.doctorId,
+          hospitalId: input.hospitalId,
+          dayOfWeek,
+          startTime: input.startTime,
+          endTime: input.endTime,
+          slotDurationMinutes: duration,
+        },
+      }),
+    ),
+  );
 }
 
 // GET DOCTOR AVAILABILITY
@@ -160,6 +164,7 @@ export async function getDoctorAvailability(doctorId: string) {
 }
 
 // UPDATE SINGLE DOCTOR AVAILABILITY
+// UPDATE SINGLE OR MULTIPLE DOCTOR AVAILABILITY DAYS
 export async function updateDoctorAvailability(
   availabilityId: string,
   input: UpdateAvailabilityInput,
@@ -172,10 +177,37 @@ export async function updateDoctorAvailability(
     throw new ApiError(404, "Doctor availability not found");
   }
 
+  const days =
+    input.days !== undefined
+      ? Array.isArray(input.days)
+        ? input.days
+        : [input.days]
+      : input.dayOfWeek !== undefined
+        ? [input.dayOfWeek]
+        : [existing.dayOfWeek];
+
+  if (days.length === 0) {
+    throw new ApiError(400, "At least one availability day is required");
+  }
+
+  if (
+    days.some(
+      (day) =>
+        !Number.isInteger(day) ||
+        day < 0 ||
+        day > 6,
+    )
+  ) {
+    throw new ApiError(400, "days must contain values between 0 and 6");
+  }
+
+  if (new Set(days).size !== days.length) {
+    throw new ApiError(400, "Duplicate days are not allowed");
+  }
+
   const merged = {
     doctorId: input.doctorId ?? existing.doctorId,
     hospitalId: input.hospitalId ?? existing.hospitalId ?? undefined,
-    dayOfWeek: input.dayOfWeek ?? existing.dayOfWeek,
     startTime: input.startTime ?? existing.startTime,
     endTime: input.endTime ?? existing.endTime,
     slotDurationMinutes:
@@ -186,7 +218,12 @@ export async function updateDoctorAvailability(
     throw new ApiError(400, "doctorId is required");
   }
 
-  validateAvailability(merged);
+  validateAvailability({
+    dayOfWeek: days[0],
+    startTime: merged.startTime,
+    endTime: merged.endTime,
+    slotDurationMinutes: merged.slotDurationMinutes,
+  });
 
   const toMinutes = (time: string) => {
     const [hours, minutes] = time.split(":").map(Number);
@@ -203,16 +240,37 @@ export async function updateDoctorAvailability(
     );
   }
 
-  return prisma.doctorAvailability.update({
-    where: { availabilityId },
-    data: {
-      doctorId: merged.doctorId,
-      hospitalId: merged.hospitalId,
-      dayOfWeek: merged.dayOfWeek,
-      startTime: merged.startTime,
-      endTime: merged.endTime,
-      slotDurationMinutes: merged.slotDurationMinutes,
-    },
+  return prisma.$transaction(async (tx) => {
+    // Update the original availability record using the first day.
+    const updated = await tx.doctorAvailability.update({
+      where: { availabilityId },
+      data: {
+        doctorId: merged.doctorId,
+        hospitalId: merged.hospitalId,
+        dayOfWeek: days[0],
+        startTime: merged.startTime,
+        endTime: merged.endTime,
+        slotDurationMinutes: merged.slotDurationMinutes,
+      },
+    });
+
+    // Create additional records for the remaining days.
+    const additionalRecords = await Promise.all(
+      days.slice(1).map((dayOfWeek) =>
+        tx.doctorAvailability.create({
+          data: {
+            doctorId: merged.doctorId,
+            hospitalId: merged.hospitalId,
+            dayOfWeek,
+            startTime: merged.startTime,
+            endTime: merged.endTime,
+            slotDurationMinutes: merged.slotDurationMinutes,
+          },
+        }),
+      ),
+    );
+
+    return [updated, ...additionalRecords];
   });
 }
 
