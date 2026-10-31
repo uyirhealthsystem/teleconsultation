@@ -13,6 +13,37 @@ import {
 } from "../services/payment.client.service.js";
 
 
+// export async function getAvailableSlotsController(
+//   req: Request,
+//   res: Response,
+// ) {
+//   try {
+//     const doctorId = req.params.doctorId as string;
+//     const date = req.query.date;
+
+//     if (typeof date !== "string") {
+//       res.status(400).json({
+//         success: false,
+//         message: "date query parameter is required (YYYY-MM-DD)",
+//       });
+//       return;
+//     }
+
+//     const slots = await getAvailableSlots(doctorId, date);
+//     const language = getRequestedLanguage(req);
+//     res.status(200).json({
+//       success: true,
+//       data: await translateResponse(slots, language),
+//     });
+//   } 
+//   catch (error) {
+//     res.status(400).json({
+//       success: false,
+//       message: error instanceof Error ? error.message : "Unable to fetch slots",
+//     });
+//   }
+// }
+
 export async function getAvailableSlotsController(
   req: Request,
   res: Response,
@@ -20,6 +51,14 @@ export async function getAvailableSlotsController(
   try {
     const doctorId = req.params.doctorId as string;
     const date = req.query.date;
+
+    if (!doctorId?.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "doctorId is required",
+      });
+      return;
+    }
 
     if (typeof date !== "string") {
       res.status(400).json({
@@ -31,22 +70,74 @@ export async function getAvailableSlotsController(
 
     const slots = await getAvailableSlots(doctorId, date);
     const language = getRequestedLanguage(req);
+
     res.status(200).json({
       success: true,
+      message: "Doctor slots fetched successfully",
       data: await translateResponse(slots, language),
     });
-  } 
-  catch (error) {
+  } catch (error) {
     res.status(400).json({
       success: false,
-      message: error instanceof Error ? error.message : "Unable to fetch slots",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unable to fetch slots",
     });
   }
 }
 
+export async function getDoctorAvailableSlotsController(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const doctorId = req.headers["x-user-id"];
+    const role = req.headers["x-user-role"];
+    const date = req.query.date;
 
+    if (typeof doctorId !== "string" || !doctorId.trim()) {
+      res.status(401).json({
+        success: false,
+        message: "Doctor authentication required",
+      });
+      return;
+    }
 
+    if (role !== "DOCTOR") {
+      res.status(403).json({
+        success: false,
+        message: "Only doctors can access their own availability",
+      });
+      return;
+    }
 
+    if (typeof date !== "string") {
+      res.status(400).json({
+        success: false,
+        message: "date query parameter is required (YYYY-MM-DD)",
+      });
+      return;
+    }
+
+    const slots = await getAvailableSlots(doctorId, date);
+    const language = getRequestedLanguage(req);
+
+    res.status(200).json({
+      success: true,
+      message: "Your slots fetched successfully",
+      data: await translateResponse(slots, language),
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unable to fetch your slots",
+    });
+  }
+}
 
 export async function bookAppointmentController(
   req: Request,

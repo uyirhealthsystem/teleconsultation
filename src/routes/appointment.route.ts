@@ -19,7 +19,10 @@ router.get(
   requireUser,
   appointmentController.getPendingDoctorAppointments,
 );
-
+router.get(
+  "/doctor/slots",
+  appointmentController.getDoctorAvailableSlotsController,
+);
 router.patch(
   "/appointments/:appointmentId/confirm",
   requireUser,
