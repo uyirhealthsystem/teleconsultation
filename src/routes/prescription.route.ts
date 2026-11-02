@@ -1,58 +1,28 @@
-
 import { Router } from "express";
 
 import {
   createPrescriptionController,
   getPrescriptionController,
-  updatePrescriptionController,
-  addPrescriptionItemController,
-  updatePrescriptionItemController,
-  removePrescriptionItemController,
-  issuePrescriptionController,
 } from "../controllers/prescription.controller.js";
 
 const router = Router();
 
-// Create a prescription draft for an appointment
+/**
+ * Create and issue a prescription for an appointment.
+ * Only the assigned doctor can perform this operation.
+ */
 router.post(
   "/appointments/:appointmentId/prescription",
   createPrescriptionController,
 );
 
-// Retrieve the prescription for an appointment
+/**
+ * Retrieve a prescription for a specific appointment.
+ * The assigned doctor or actual patient may access it.
+ */
 router.get(
-  "/appointments/:appointmentId/prescriptions",
+  "/appointments/:appointmentId/prescription/me",
   getPrescriptionController,
-);
-
-// Update prescription-level instructions
-router.patch(
-  "/appointments/:appointmentId/prescription",
-  updatePrescriptionController,
-);
-
-// Add a medicine to the prescription
-router.post(
-  "/appointments/:appointmentId/prescription/items",
-  addPrescriptionItemController,
-);
-
-// Update a medicine in the prescription
-router.patch(
-  "/appointments/:appointmentId/prescription/items/:itemId",
-  updatePrescriptionItemController,
-);
-
-// Remove a medicine from the prescription
-router.delete(
-  "/appointments/:appointmentId/prescription/items/:itemId",
-  removePrescriptionItemController,
-);
-
-// Issue the prescription after consultation ends
-router.post(
-  "/appointments/:appointmentId/prescription/issue",
-  issuePrescriptionController,
 );
 
 export default router;

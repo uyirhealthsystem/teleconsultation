@@ -7,6 +7,9 @@ import {
 } from "../generated/prisma/client.js";
 import { ApiError } from "../utils/ApiError.js";
 import { prisma } from "./prisma.service.js";
+import {
+  provisionConsultationSessionForPaidAppointment,
+} from "./consultation.session.service.js";
 
 const blockingStatuses: AppointmentStatus[] = [
   AppointmentStatus.PENDING_PAYMENT,
@@ -418,7 +421,7 @@ export async function getAvailableSlots(
     }
   }
 
-  return slots;
+  return slots.filter((slot) => slot.available);
 }
 
 
@@ -949,6 +952,37 @@ export async function listPendingDoctorAppointments(
   };
 }
 
+// export async function confirmAppointment(appointmentId: string) {
+//   const result = await prisma.appointment.updateMany({
+//     where: {
+//       id: appointmentId,
+//       status: "PENDING",
+//     },
+//     data: {
+//       status: "CONFIRMED",
+//     },
+//   });
+
+//   if (result.count === 0) {
+//     throw new ApiError(
+//       409,
+//       "Appointment not found or cannot be confirmed",
+//     );
+//   }
+
+//   const appointment = await prisma.appointment.findUnique({
+//     where: {
+//       id: appointmentId,
+//     },
+//   });
+
+//   if (!appointment) {
+//     throw new ApiError(404, "Appointment not found");
+//   }
+
+//   return appointment;
+// }
+
 export async function confirmAppointment(
   appointmentId: string,
   actor: AppointmentActor,
@@ -989,9 +1023,40 @@ export async function confirmAppointment(
     );
   }
 
-  return prisma.appointment.findUniqueOrThrow({
+  // Fetch the confirmed appointment.
+  const appointment = await prisma.appointment.findUniqueOrThrow({
     where: { appointmentId },
   });
+
+  // Create or retrieve the 100ms consultation session.
+  try {
+    const session =
+      await provisionConsultationSessionForPaidAppointment(
+        appointmentId,
+      );
+
+    return {
+      appointment,
+      session,
+      roomCreated: true,
+      message: "Appointment confirmed and consultation room is ready",
+    };
+  } catch (error) {
+    // Appointment remains CONFIRMED.
+    // Room provisioning can be retried separately.
+    console.error(
+      "100ms room provisioning failed after appointment confirmation:",
+      error,
+    );
+
+    return {
+      appointment,
+      session: null,
+      roomCreated: false,
+      message:
+        "Appointment confirmed, but consultation room creation failed. Please retry room provisioning.",
+    };
+  }
 }
 
 export async function rejectAppointment(

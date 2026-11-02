@@ -536,7 +536,7 @@ export async function confirmAppointmentController(
   try {
     const authReq = req as AuthenticatedRequest;
 
-    const appointment = await confirmAppointment(
+    const result = await confirmAppointment(
       authReq.params.appointmentId as string,
       {
         userId: authReq.userId,
@@ -547,7 +547,13 @@ export async function confirmAppointmentController(
     res.status(200).json({
       success: true,
       message: "Appointment confirmed successfully",
-      data: appointment,
+      data: {
+        appointment: result.appointment,
+        appointmentStatus: result.appointment.status,
+        session: result.session,
+        roomCreated: result.roomCreated,
+        serviceMessage: result.message,
+      },
     });
   } catch (error) {
     next(error);

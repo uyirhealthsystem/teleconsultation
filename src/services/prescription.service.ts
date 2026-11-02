@@ -1,4 +1,3 @@
-
 import {
   ConsentType,
   PrescriptionStatus,
@@ -14,10 +13,6 @@ export type PrescriptionActor = {
   role: string;
 };
 
-type PrescriptionDraftInput = {
-  instructions?: string | null;
-};
-
 type PrescriptionItemInput = {
   medicineName?: string;
   dosage?: string | null;
@@ -28,6 +23,11 @@ type PrescriptionItemInput = {
   sortOrder?: number;
 };
 
+type CreatePrescriptionInput = {
+  instructions?: string | null;
+  items: PrescriptionItemInput[];
+};
+
 const PATIENT_ROLES = new Set([
   "PATIENT",
   "CITIZEN",
@@ -35,6 +35,19 @@ const PATIENT_ROLES = new Set([
   "CITIZEN_USER",
 ]);
 
+const PRESCRIPTION_INCLUDE = {
+  items: {
+    orderBy: {
+      sortOrder: "asc" as const,
+    },
+  },
+};
+
+/**
+ * Authorize only the assigned doctor or actual patient.
+ * The person who booked an appointment for somebody else
+ * cannot automatically view that person's prescription.
+ */
 async function authorizeAppointment(
   appointmentId: string,
   actor: PrescriptionActor,
@@ -61,11 +74,7 @@ async function authorizeAppointment(
     PATIENT_ROLES.has(role) &&
     appointment.patientId === actor.userId;
 
-  const isBooker =
-    PATIENT_ROLES.has(role) &&
-    appointment.bookedByUserId === actor.userId;
-
-  if (!isDoctor && !isPatient && !isBooker) {
+  if (!isDoctor && !isPatient) {
     throw new ApiError(
       403,
       "You are not authorized to access this prescription",
@@ -81,95 +90,19 @@ async function authorizeAppointment(
     appointment,
     isDoctor,
     isPatient,
-    isBooker,
   };
 }
 
-async function assertPrescriptionSessionExists(
-  appointmentId: string,
-) {
-  const session = await prisma.consultationSession.findUnique({
-    where: { appointmentId },
-  });
-
-  if (!session) {
-    throw new ApiError(
-      409,
-      "A consultation session must exist first",
-    );
-  }
-
+/**
+ * Validate one medicine item.
+ */
+function validateItemInput(input: PrescriptionItemInput) {
   if (
-    session.status !== SessionStatus.ACTIVE &&
-    session.status !== SessionStatus.ENDED
+    !input ||
+    typeof input.medicineName !== "string" ||
+    !input.medicineName.trim()
   ) {
-    throw new ApiError(
-      409,
-      "A prescription can only be drafted during or after an active consultation",
-    );
-  }
-
-  return session;
-}
-
-async function getPrescriptionOrThrow(
-  appointmentId: string,
-) {
-  const prescription = await prisma.prescription.findUnique({
-    where: { appointmentId },
-    include: {
-      items: {
-        orderBy: { sortOrder: "asc" },
-      },
-    },
-  });
-
-  if (!prescription) {
-    throw new ApiError(404, "Prescription not found");
-  }
-
-  return prescription;
-}
-
-function validateInstructions(
-  input: PrescriptionDraftInput,
-) {
-  if (
-    input.instructions !== undefined &&
-    input.instructions !== null &&
-    typeof input.instructions !== "string"
-  ) {
-    throw new ApiError(
-      400,
-      "Prescription instructions must be a string or null",
-    );
-  }
-
-  if (input.instructions === undefined) {
-    throw new ApiError(
-      400,
-      "Provide prescription instructions",
-    );
-  }
-}
-
-function validateItemInput(
-  input: PrescriptionItemInput,
-  isCreate: boolean,
-) {
-  if (isCreate && !input.medicineName?.trim()) {
     throw new ApiError(400, "medicineName is required");
-  }
-
-  if (
-    input.medicineName !== undefined &&
-    (typeof input.medicineName !== "string" ||
-      !input.medicineName.trim())
-  ) {
-    throw new ApiError(
-      400,
-      "medicineName must be a non-empty string",
-    );
   }
 
   for (const field of [
@@ -212,33 +145,22 @@ function validateItemInput(
       "sortOrder must be a non-negative integer",
     );
   }
-
-  if (
-    !isCreate &&
-    ![
-      "medicineName",
-      "dosage",
-      "frequency",
-      "duration",
-      "quantity",
-      "instructions",
-      "sortOrder",
-    ].some((field) => input[field as keyof PrescriptionItemInput] !== undefined)
-  ) {
-    throw new ApiError(
-      400,
-      "Provide at least one medicine field to update",
-    );
-  }
 }
 
 /**
- * Create a prescription draft.
+ * Create and issue a complete prescription for an appointment.
+ * Multiple medicines can be created in a single request.
+ *
+ * Requirements:
+ * - The actor must be the assigned doctor.
+ * - Teleconsultation consent must be signed.
+ * - The consultation session must have ended.
+ * - Only one prescription is allowed per appointment.
  */
 export async function createPrescription(
   appointmentId: string,
   actor: PrescriptionActor,
-  input: PrescriptionDraftInput,
+  input: CreatePrescriptionInput,
 ) {
   const { appointment, isDoctor } = await authorizeAppointment(
     appointmentId,
@@ -252,11 +174,49 @@ export async function createPrescription(
     );
   }
 
-  if (input.instructions !== undefined) {
-    validateInstructions(input);
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input)
+  ) {
+    throw new ApiError(400, "A valid prescription body is required");
   }
 
-  await assertPrescriptionSessionExists(appointmentId);
+  if (
+    input.instructions !== undefined &&
+    input.instructions !== null &&
+    typeof input.instructions !== "string"
+  ) {
+    throw new ApiError(
+      400,
+      "Prescription instructions must be a string or null",
+    );
+  }
+
+  if (
+    !Array.isArray(input.items) ||
+    input.items.length === 0
+  ) {
+    throw new ApiError(
+      400,
+      "At least one medicine is required",
+    );
+  }
+
+  for (const item of input.items) {
+    validateItemInput(item);
+  }
+
+  const session = await prisma.consultationSession.findUnique({
+    where: { appointmentId },
+  });
+
+  if (!session || session.status !== SessionStatus.ENDED) {
+    throw new ApiError(
+      409,
+      "The consultation session must end before creating a prescription",
+    );
+  }
 
   const existing = await prisma.prescription.findUnique({
     where: { appointmentId },
@@ -275,16 +235,27 @@ export async function createPrescription(
         appointmentId,
         doctorId: appointment.doctorId,
         patientId: appointment.patientId,
-        status: PrescriptionStatus.DRAFT,
+        status: PrescriptionStatus.ISSUED,
         instructions: input.instructions ?? null,
-      },
-      include: {
+        issuedAt: new Date(),
+
         items: {
-          orderBy: { sortOrder: "asc" },
+          create: input.items.map((item, index) => ({
+            medicineName: item.medicineName!.trim(),
+            dosage: item.dosage ?? null,
+            frequency: item.frequency ?? null,
+            duration: item.duration ?? null,
+            quantity: item.quantity ?? null,
+            instructions: item.instructions ?? null,
+            sortOrder: item.sortOrder ?? index + 1,
+          })),
         },
       },
+      include: PRESCRIPTION_INCLUDE,
     });
   } catch (error) {
+    // Handle concurrent requests attempting to create a
+    // prescription for the same appointment.
     const existingPrescription =
       await prisma.prescription.findUnique({
         where: { appointmentId },
@@ -302,8 +273,11 @@ export async function createPrescription(
 }
 
 /**
- * Retrieve a prescription.
- * Patients and bookers can only retrieve issued prescriptions.
+ * Retrieve the prescription for a specific appointment.
+ *
+ * Both the assigned doctor and actual patient can use this
+ * endpoint. Authorization is based on the authenticated user ID
+ * and their relationship to the appointment.
  */
 export async function getPrescription(
   appointmentId: string,
@@ -314,18 +288,17 @@ export async function getPrescription(
     actor,
   );
 
-  const prescription = await getPrescriptionOrThrow(appointmentId);
+  const prescription = await prisma.prescription.findUnique({
+    where: { appointmentId },
+    include: PRESCRIPTION_INCLUDE,
+  });
 
-//   if (
-//     prescription.doctorId !== actor.userId &&
-//     !isDoctor
-//   ) {
-//     throw new ApiError(
-//       403,
-//       "You are not authorized to access this prescription",
-//     );
-//   }
+  if (!prescription) {
+    throw new ApiError(404, "Prescription not found");
+  }
 
+  // Doctors may inspect the prescription regardless of its
+  // status, but patients may only access issued prescriptions.
   if (
     !isDoctor &&
     prescription.status !== PrescriptionStatus.ISSUED
@@ -337,317 +310,4 @@ export async function getPrescription(
   }
 
   return prescription;
-}
-
-/**
- * Update draft-level instructions.
- */
-export async function updatePrescription(
-  appointmentId: string,
-  actor: PrescriptionActor,
-  input: PrescriptionDraftInput,
-) {
-  const { isDoctor } = await authorizeAppointment(
-    appointmentId,
-    actor,
-  );
-
-  if (!isDoctor) {
-    throw new ApiError(
-      403,
-      "Only the assigned doctor can update a prescription",
-    );
-  }
-
-  validateInstructions(input);
-
-  const prescription = await getPrescriptionOrThrow(appointmentId);
-
-  if (prescription.status !== PrescriptionStatus.DRAFT) {
-    throw new ApiError(
-      409,
-      "Only draft prescriptions can be updated",
-    );
-  }
-
-  const result = await prisma.prescription.updateMany({
-    where: {
-      prescriptionId: prescription.prescriptionId,
-      doctorId: actor.userId,
-      status: PrescriptionStatus.DRAFT,
-    },
-    data: {
-      instructions: input.instructions,
-    },
-  });
-
-  if (result.count === 0) {
-    throw new ApiError(
-      409,
-      "The prescription is no longer editable",
-    );
-  }
-
-  return getPrescriptionOrThrow(appointmentId);
-}
-
-/**
- * Add a medicine item to a draft prescription.
- */
-export async function addPrescriptionItem(
-  appointmentId: string,
-  actor: PrescriptionActor,
-  input: PrescriptionItemInput,
-) {
-  const { isDoctor } = await authorizeAppointment(
-    appointmentId,
-    actor,
-  );
-
-  if (!isDoctor) {
-    throw new ApiError(
-      403,
-      "Only the assigned doctor can add medicines",
-    );
-  }
-
-  validateItemInput(input, true);
-
-  const prescription = await getPrescriptionOrThrow(appointmentId);
-
-  if (prescription.status !== PrescriptionStatus.DRAFT) {
-    throw new ApiError(
-      409,
-      "Medicines can only be added to a draft prescription",
-    );
-  }
-
-  await prisma.prescriptionItem.create({
-    data: {
-      prescriptionId: prescription.prescriptionId,
-      medicineName: input.medicineName!.trim(),
-      dosage: input.dosage ?? null,
-      frequency: input.frequency ?? null,
-      duration: input.duration ?? null,
-      quantity: input.quantity ?? null,
-      instructions: input.instructions ?? null,
-      sortOrder: input.sortOrder ?? 0,
-    },
-  });
-
-  return getPrescriptionOrThrow(appointmentId);
-}
-
-/**
- * Update a medicine item on a draft prescription.
- */
-export async function updatePrescriptionItem(
-  appointmentId: string,
-  itemId: string,
-  actor: PrescriptionActor,
-  input: PrescriptionItemInput,
-) {
-  const { isDoctor } = await authorizeAppointment(
-    appointmentId,
-    actor,
-  );
-
-  if (!isDoctor) {
-    throw new ApiError(
-      403,
-      "Only the assigned doctor can update medicines",
-    );
-  }
-
-  validateItemInput(input, false);
-
-  const prescription = await getPrescriptionOrThrow(appointmentId);
-
-  if (prescription.status !== PrescriptionStatus.DRAFT) {
-    throw new ApiError(
-      409,
-      "Medicines on an issued prescription cannot be edited",
-    );
-  }
-
-  const item = prescription.items.find(
-    (entry) => entry.prescriptionItemId === itemId,
-  );
-
-  if (!item) {
-    throw new ApiError(404, "Prescription item not found");
-  }
-
-  const data: {
-    medicineName?: string;
-    dosage?: string | null;
-    frequency?: string | null;
-    duration?: string | null;
-    quantity?: number | null;
-    instructions?: string | null;
-    sortOrder?: number;
-  } = {};
-
-  if (input.medicineName !== undefined) {
-    data.medicineName = input.medicineName.trim();
-  }
-  if (input.dosage !== undefined) data.dosage = input.dosage;
-  if (input.frequency !== undefined) data.frequency = input.frequency;
-  if (input.duration !== undefined) data.duration = input.duration;
-  if (input.quantity !== undefined) data.quantity = input.quantity;
-  if (input.instructions !== undefined) {
-    data.instructions = input.instructions;
-  }
-  if (input.sortOrder !== undefined) data.sortOrder = input.sortOrder;
-
-  const result = await prisma.prescriptionItem.updateMany({
-    where: {
-      prescriptionItemId: itemId,
-      prescriptionId: prescription.prescriptionId,
-      prescription: {
-        is: {
-          status: PrescriptionStatus.DRAFT,
-          doctorId: actor.userId,
-        },
-      },
-    },
-    data,
-  });
-
-  if (result.count === 0) {
-    throw new ApiError(
-      409,
-      "The prescription is no longer editable",
-    );
-  }
-
-  return getPrescriptionOrThrow(appointmentId);
-}
-
-/**
- * Remove a medicine item from a draft prescription.
- */
-export async function removePrescriptionItem(
-  appointmentId: string,
-  itemId: string,
-  actor: PrescriptionActor,
-) {
-  const { isDoctor } = await authorizeAppointment(
-    appointmentId,
-    actor,
-  );
-
-  if (!isDoctor) {
-    throw new ApiError(
-      403,
-      "Only the assigned doctor can remove medicines",
-    );
-  }
-
-  const prescription = await getPrescriptionOrThrow(appointmentId);
-
-  if (prescription.status !== PrescriptionStatus.DRAFT) {
-    throw new ApiError(
-      409,
-      "Medicines cannot be removed from an issued prescription",
-    );
-  }
-
-  const result = await prisma.prescriptionItem.deleteMany({
-    where: {
-      prescriptionItemId: itemId,
-      prescriptionId: prescription.prescriptionId,
-      prescription: {
-        is: {
-          status: PrescriptionStatus.DRAFT,
-          doctorId: actor.userId,
-        },
-      },
-    },
-  });
-
-  if (result.count === 0) {
-    throw new ApiError(404, "Prescription item not found");
-  }
-
-  return getPrescriptionOrThrow(appointmentId);
-}
-
-/**
- * Issue a draft prescription after the consultation has ended.
- */
-export async function issuePrescription(
-  appointmentId: string,
-  actor: PrescriptionActor,
-) {
-  const { isDoctor } = await authorizeAppointment(
-    appointmentId,
-    actor,
-  );
-
-  if (!isDoctor) {
-    throw new ApiError(
-      403,
-      "Only the assigned doctor can issue a prescription",
-    );
-  }
-
-  const session = await prisma.consultationSession.findUnique({
-    where: { appointmentId },
-  });
-
-  if (!session || session.status !== SessionStatus.ENDED) {
-    throw new ApiError(
-      409,
-      "The consultation session must end before issuing a prescription",
-    );
-  }
-
-  const prescription = await getPrescriptionOrThrow(appointmentId);
-
-  if (prescription.status === PrescriptionStatus.ISSUED) {
-    return prescription;
-  }
-
-  if (prescription.status !== PrescriptionStatus.DRAFT) {
-    throw new ApiError(
-      409,
-      "This prescription cannot be issued",
-    );
-  }
-
-  if (prescription.items.length === 0) {
-    throw new ApiError(
-      400,
-      "Add at least one medicine before issuing the prescription",
-    );
-  }
-
-  const result = await prisma.prescription.updateMany({
-    where: {
-      prescriptionId: prescription.prescriptionId,
-      appointmentId,
-      doctorId: actor.userId,
-      status: PrescriptionStatus.DRAFT,
-    },
-    data: {
-      status: PrescriptionStatus.ISSUED,
-      issuedAt: new Date(),
-    },
-  });
-
-  if (result.count === 0) {
-    const latest = await getPrescriptionOrThrow(appointmentId);
-
-    if (latest.status === PrescriptionStatus.ISSUED) {
-      return latest;
-    }
-
-    throw new ApiError(
-      409,
-      "The prescription changed while being issued. Please retry",
-    );
-  }
-
-  return getPrescriptionOrThrow(appointmentId);
 }
