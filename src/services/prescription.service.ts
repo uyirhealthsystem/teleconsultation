@@ -1,3 +1,4 @@
+
 import {
   ConsentType,
   PrescriptionStatus,
@@ -43,10 +44,25 @@ const PRESCRIPTION_INCLUDE = {
   },
 };
 
+function validatePatientAge(patientAge: number) {
+  if (
+    !Number.isInteger(patientAge) ||
+    patientAge < 0 ||
+    patientAge > 130
+  ) {
+    throw new ApiError(
+      400,
+      "Invalid patient age stored on appointment",
+    );
+  }
+}
+
 /**
- * Authorize only the assigned doctor or actual patient.
- * The person who booked an appointment for somebody else
- * cannot automatically view that person's prescription.
+ * Authorize the assigned doctor or actual patient.
+ *
+ * Age is read only from the appointment database record.
+ * Adults do not require guardian consent.
+ * Minors require an existing signed MINOR_GUARDIAN consent.
  */
 async function authorizeAppointment(
   appointmentId: string,
@@ -62,6 +78,26 @@ async function authorizeAppointment(
 
   if (!appointment) {
     throw new ApiError(404, "Appointment not found");
+  }
+
+  const patientAge = appointment.patientAgeAtBooking;
+
+  if (patientAge === null || patientAge === undefined) {
+    throw new ApiError(
+      409,
+      "Patient age was not recorded for this appointment",
+    );
+  }
+
+  validatePatientAge(patientAge);
+
+  const expectedCategory = patientAge >= 18 ? "ADULT" : "MINOR";
+
+  if (appointment.patientCategory !== expectedCategory) {
+    throw new ApiError(
+      409,
+      "Patient category does not match the age recorded for this appointment",
+    );
   }
 
   const role = actor.role.trim().toUpperCase();
@@ -83,13 +119,15 @@ async function authorizeAppointment(
 
   await assertAppointmentHasSignedConsent(
     appointmentId,
-    ConsentType.TELECONSULTATION,
+    ConsentType.MINOR_GUARDIAN,
+    patientAge,
   );
 
   return {
     appointment,
     isDoctor,
     isPatient,
+    patientAge,
   };
 }
 
@@ -148,14 +186,14 @@ function validateItemInput(input: PrescriptionItemInput) {
 }
 
 /**
- * Create and issue a complete prescription for an appointment.
- * Multiple medicines can be created in a single request.
+ * Create and issue a prescription.
  *
  * Requirements:
- * - The actor must be the assigned doctor.
- * - Teleconsultation consent must be signed.
- * - The consultation session must have ended.
- * - Only one prescription is allowed per appointment.
+ * - Assigned doctor only.
+ * - Adult patients do not require guardian consent.
+ * - Minor patients require signed guardian consent.
+ * - Consultation session must have ended.
+ * - Only one prescription per appointment.
  */
 export async function createPrescription(
   appointmentId: string,
@@ -179,7 +217,10 @@ export async function createPrescription(
     typeof input !== "object" ||
     Array.isArray(input)
   ) {
-    throw new ApiError(400, "A valid prescription body is required");
+    throw new ApiError(
+      400,
+      "A valid prescription body is required",
+    );
   }
 
   if (
@@ -193,10 +234,7 @@ export async function createPrescription(
     );
   }
 
-  if (
-    !Array.isArray(input.items) ||
-    input.items.length === 0
-  ) {
+  if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError(
       400,
       "At least one medicine is required",
@@ -254,8 +292,6 @@ export async function createPrescription(
       include: PRESCRIPTION_INCLUDE,
     });
   } catch (error) {
-    // Handle concurrent requests attempting to create a
-    // prescription for the same appointment.
     const existingPrescription =
       await prisma.prescription.findUnique({
         where: { appointmentId },
@@ -275,9 +311,7 @@ export async function createPrescription(
 /**
  * Retrieve the prescription for a specific appointment.
  *
- * Both the assigned doctor and actual patient can use this
- * endpoint. Authorization is based on the authenticated user ID
- * and their relationship to the appointment.
+ * Both assigned doctor and actual patient can access it.
  */
 export async function getPrescription(
   appointmentId: string,
@@ -297,8 +331,6 @@ export async function getPrescription(
     throw new ApiError(404, "Prescription not found");
   }
 
-  // Doctors may inspect the prescription regardless of its
-  // status, but patients may only access issued prescriptions.
   if (
     !isDoctor &&
     prescription.status !== PrescriptionStatus.ISSUED

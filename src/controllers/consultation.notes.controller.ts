@@ -4,21 +4,28 @@ import type { Request, Response } from "express";
 import { ApiError } from "../utils/ApiError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
-import {createConsultationNote,getConsultationNote,updateConsultationNote,finalizeConsultationNote} from "../services/consultation.notes.service.js";
+import {
+  createConsultationNote,
+  getConsultationNote,
+  updateConsultationNote,
+  finalizeConsultationNote,
+} from "../services/consultation.notes.service.js";
 
-import type { ConsultationNoteActor } from "../services/consultation.notes.service.js";
+import type {
+  ConsultationNoteActor,
+} from "../services/consultation.notes.service.js";
 
-import {getRequestedLanguage,translateResponse} from "../utils/translate.response.js";
+import {
+  getRequestedLanguage,
+  translateResponse,
+} from "../utils/translate.response.js";
 
 function getActor(req: Request): ConsultationNoteActor {
   const userId = req.header("x-user-id");
   const role = req.header("x-user-role");
 
   if (!userId || !role) {
-    throw new ApiError(
-      401,
-      "Missing authenticated user information",
-    );
+    throw new ApiError(401, "Missing authenticated user information");
   }
 
   return { userId, role };
@@ -50,7 +57,9 @@ export const createNote = asyncHandler(
     res.status(201).json({
       success: true,
       message: await translateResponse(
-        "Consultation note draft created successfully",
+        note.status === "FINALIZED"
+          ? "Consultation note finalized and published successfully"
+          : "Consultation note draft created successfully",
         language,
       ),
       data: await translateResponse(note, language),
@@ -92,7 +101,9 @@ export const updateNote = asyncHandler(
     res.status(200).json({
       success: true,
       message: await translateResponse(
-        "Consultation note draft updated successfully",
+        note.status === "FINALIZED"
+          ? "Consultation note finalized and published successfully"
+          : "Consultation note draft updated successfully",
         language,
       ),
       data: await translateResponse(note, language),

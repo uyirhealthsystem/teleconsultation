@@ -1,10 +1,13 @@
 
-import {ConsentType,SessionStatus} from "../generated/prisma/client.js";
+import {
+  ConsentType,
+  SessionStatus,
+} from "../generated/prisma/client.js";
+
 import { prisma } from "./prisma.service.js";
 import { assertAppointmentHasSignedConsent } from "./consent.service.js";
 import { ApiError } from "../utils/ApiError.js";
-import { generateHmsAuthToken ,hms } from "./hms.service.js";
-
+import { generateHmsAuthToken, hms } from "./hms.service.js";
 
 const ELIGIBLE_APPOINTMENT_STATUSES = [
   "CONFIRMED",
@@ -23,6 +26,10 @@ export type SessionActor = {
   role: string;
 };
 
+/**
+ * Authorizes an appointment actor and validates
+ * guardian consent using the patient's stored age.
+ */
 async function authorizeAppointment(
   appointmentId: string,
   actor: SessionActor,
@@ -44,15 +51,7 @@ async function authorizeAppointment(
   const isDoctor =
     appointment.doctorId === actor.userId &&
     role === "DOCTOR";
-if (process.env.NODE_ENV !== "production") {
-  console.log("[Session Authorization Debug]", {
-    appointmentId,
-    authenticatedUserId: actor.userId,
-    authenticatedRole: role,
-    assignedDoctorId: appointment.doctorId,
-    isDoctor,
-  });
-}
+
   const isPatient =
     appointment.patientId === actor.userId &&
     PATIENT_ROLES.has(role);
@@ -79,16 +78,58 @@ if (process.env.NODE_ENV !== "production") {
     );
   }
 
+  // Always retrieve patient age from the appointment.
+  const patientAge = appointment.patientAgeAtBooking;
+
+  if (
+    patientAge === null ||
+    patientAge === undefined ||
+    !Number.isInteger(patientAge) ||
+    patientAge < 0 ||
+    patientAge > 130
+  ) {
+    throw new ApiError(
+      400,
+      "Valid patient age is not recorded for this appointment",
+    );
+  }
+
+  // Verify that the stored category matches the recorded age.
+  const expectedCategory =
+    patientAge >= 18 ? "ADULT" : "MINOR";
+
+  if (appointment.patientCategory !== expectedCategory) {
+    throw new ApiError(
+      409,
+      "Patient category does not match the recorded age",
+    );
+  }
+
+  // Adults do not need guardian consent.
+  // Minors require signed, non-revoked guardian consent.
   await assertAppointmentHasSignedConsent(
     appointmentId,
-    ConsentType.TELECONSULTATION,
+    ConsentType.MINOR_GUARDIAN,
+    patientAge,
   );
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[Session Authorization Debug]", {
+      appointmentId,
+      authenticatedUserId: actor.userId,
+      authenticatedRole: role,
+      patientAge,
+      patientCategory: appointment.patientCategory,
+      isDoctor,
+    });
+  }
 
   return {
     appointment,
     isDoctor,
     isPatient,
     isBooker,
+    patientAge,
   };
 }
 
@@ -103,94 +144,6 @@ async function getSessionOrThrow(sessionId: string) {
 
   return session;
 }
-
-/**
- * Creates one session per appointment.
- */
-
-// export async function createOrGetConsultationSession(
-//   appointmentId: string,
-//   actor: SessionActor,
-// ) {
-//   const { appointment } = await authorizeAppointment(
-//     appointmentId,
-//     actor,
-//   );
-
-//   const existing = await prisma.consultationSession.findUnique({
-//     where: { appointmentId },
-//   });
-
-//   if (existing) {
-//     if (
-//       existing.status === SessionStatus.ENDED ||
-//       existing.status === SessionStatus.FAILED
-//     ) {
-//       throw new ApiError(
-//         409,
-//         "This consultation session is already closed",
-//       );
-//     }
-
-//     return existing;
-//   }
-
-//   const templateId = process.env.HMS_TEMPLATE_ID;
-
-//   if (!templateId) {
-//     throw new ApiError(
-//       500,
-//       "100ms template ID is not configured",
-//     );
-//   }
-
-//   try {
-//     // Create the actual 100ms room.
-//     const roomName = `uyir-consultation-${appointmentId}`;
-
-//     const room = await hms.rooms.create({
-//       name: roomName,
-//       description: `Uyir Health consultation ${appointmentId}`,
-//       template_id: templateId,
-//       region: "in",
-//     });
-
-//     // Store the actual 100ms room ID.
-//     const meetingRoomId = room.id;
-
-//     return await prisma.consultationSession.create({
-//       data: {
-//         appointmentId,
-//         meetingRoomId,
-//         status: SessionStatus.WAITING,
-//         scheduledStartAt: appointment.scheduledAt,
-//       },
-//     });
-//   } catch (error) {
-//     // Another request may have created the session concurrently.
-//     const session = await prisma.consultationSession.findUnique({
-//       where: { appointmentId },
-//     });
-
-//     if (session) {
-//       if (
-//         session.status === SessionStatus.ENDED ||
-//         session.status === SessionStatus.FAILED
-//       ) {
-//         throw new ApiError(
-//           409,
-//           "This consultation session is already closed",
-//         );
-//       }
-
-//       return session;
-//     }
-
-//     // No session exists, so propagate the original error.
-//     throw error;
-//   }
-// }
-
 
 /**
  * Retrieves the session for an appointment.
@@ -231,9 +184,6 @@ export async function checkInPatient(
     appointment,
   } = await authorizeAppointment(appointmentId, actor);
 
-  // The patient can check in directly.
-  // For family bookings, the person who booked can check in
-  // on behalf of the family member.
   const canCheckIn =
     isPatient ||
     (
@@ -270,7 +220,6 @@ export async function checkInPatient(
     );
   }
 
-  // Repeated check-in is safe and idempotent.
   if (session.waitingStartedAt) {
     return session;
   }
@@ -520,10 +469,10 @@ export async function endConsultation(
   return getSessionOrThrow(session.sessionId);
 }
 
-
-
-
-
+/**
+ * Creates the 100ms room and persists its room ID.
+ * Called after the appointment becomes eligible for provisioning.
+ */
 export async function provisionConsultationSessionForPaidAppointment(
   appointmentId: string,
 ) {
@@ -539,13 +488,11 @@ export async function provisionConsultationSessionForPaidAppointment(
   try {
     return await prisma.$transaction(
       async (tx) => {
-        // Serialize provisioning attempts for this appointment
-        // across concurrent requests and backend instances.
         await tx.$executeRaw`
-  SELECT pg_advisory_xact_lock(
-    hashtext(${appointmentId})::bigint
-  )
-`;
+          SELECT pg_advisory_xact_lock(
+            hashtext(${appointmentId})::bigint
+          )
+        `;
 
         const appointment = await tx.appointment.findUnique({
           where: { appointmentId },
@@ -585,8 +532,6 @@ export async function provisionConsultationSessionForPaidAppointment(
           return existing;
         }
 
-        // The lock remains held while the room is created and
-        // its session record is saved.
         const room = await hms.rooms.create({
           name: `uyir-consultation-${appointmentId}`,
           description: `Uyir Health consultation ${appointmentId}`,
@@ -609,7 +554,6 @@ export async function provisionConsultationSessionForPaidAppointment(
       },
     );
   } catch (error) {
-    // Recover if another request has already persisted the session.
     const existing = await prisma.consultationSession.findUnique({
       where: { appointmentId },
     });
@@ -632,6 +576,9 @@ export async function provisionConsultationSessionForPaidAppointment(
   }
 }
 
+/**
+ * Generates a 100ms join token for the authorized appointment user.
+ */
 export async function generateConsultationJoinToken(
   appointmentId: string,
   actor: SessionActor,
@@ -640,7 +587,6 @@ export async function generateConsultationJoinToken(
     isDoctor,
     isPatient,
     isBooker,
-    appointment,
   } = await authorizeAppointment(appointmentId, actor);
 
   const session = await prisma.consultationSession.findUnique({
@@ -692,4 +638,3 @@ export async function generateConsultationJoinToken(
     role,
   };
 }
-

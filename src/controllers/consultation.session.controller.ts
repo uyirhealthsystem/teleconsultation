@@ -8,22 +8,29 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 
 import {
-  //createOrGetConsultationSession,
   getConsultationSession,
   checkInPatient,
   markDoctorDelayed,
   startConsultation,
   endConsultation,
-  generateConsultationJoinToken
+  generateConsultationJoinToken,
 } from "../services/consultation.session.service.js";
 
-import type { SessionActor } from "../services/consultation.session.service.js";
+import type {
+  SessionActor,
+} from "../services/consultation.session.service.js";
 
 import {
   getRequestedLanguage,
   translateResponse,
-} from "../utils/translate.response";
+} from "../utils/translate.response.js";
 
+/**
+ * Gets the authenticated actor.
+ *
+ * Patient age is intentionally not accepted from request headers.
+ * It is retrieved from the Appointment record inside the service.
+ */
 function getActor(req: Request): SessionActor {
   const userId = req.header("x-user-id");
   const role = req.header("x-user-role");
@@ -35,9 +42,15 @@ function getActor(req: Request): SessionActor {
     );
   }
 
-  return { userId, role };
+  return {
+    userId: userId.trim(),
+    role: role.trim(),
+  };
 }
 
+/**
+ * Gets and validates appointment ID.
+ */
 function getAppointmentId(req: Request): string {
   const appointmentId = req.params.appointmentId as string;
 
@@ -48,26 +61,9 @@ function getAppointmentId(req: Request): string {
   return appointmentId;
 }
 
-// export const createSession = asyncHandler(
-//   async (req: Request, res: Response) => {
-//     const session = await createOrGetConsultationSession(
-//       getAppointmentId(req),
-//       getActor(req),
-//     );
-
-//     const language = getRequestedLanguage(req);
-
-//     res.status(200).json({
-//       success: true,
-//       message: await translateResponse(
-//         "Consultation session retrieved or created successfully",
-//         language,
-//       ),
-//       data: await translateResponse(session, language),
-//     });
-//   },
-// );
-
+/**
+ * GET appointment consultation session.
+ */
 export const getSession = asyncHandler(
   async (req: Request, res: Response) => {
     const session = await getConsultationSession(
@@ -88,6 +84,9 @@ export const getSession = asyncHandler(
   },
 );
 
+/**
+ * POST patient check-in.
+ */
 export const patientCheckIn = asyncHandler(
   async (req: Request, res: Response) => {
     const session = await checkInPatient(
@@ -108,6 +107,9 @@ export const patientCheckIn = asyncHandler(
   },
 );
 
+/**
+ * POST doctor marks consultation delay.
+ */
 export const doctorMarkDelay = asyncHandler(
   async (req: Request, res: Response) => {
     const session = await markDoctorDelayed(
@@ -128,6 +130,9 @@ export const doctorMarkDelay = asyncHandler(
   },
 );
 
+/**
+ * POST doctor starts consultation.
+ */
 export const doctorStartConsultation = asyncHandler(
   async (req: Request, res: Response) => {
     const session = await startConsultation(
@@ -148,6 +153,9 @@ export const doctorStartConsultation = asyncHandler(
   },
 );
 
+/**
+ * POST doctor ends consultation.
+ */
 export const doctorEndConsultation = asyncHandler(
   async (req: Request, res: Response) => {
     const session = await endConsultation(
@@ -168,6 +176,9 @@ export const doctorEndConsultation = asyncHandler(
   },
 );
 
+/**
+ * POST generate 100ms meeting join token.
+ */
 export const generateJoinToken = asyncHandler(
   async (req: Request, res: Response) => {
     const result = await generateConsultationJoinToken(
@@ -183,7 +194,7 @@ export const generateJoinToken = asyncHandler(
         "Meeting token generated successfully",
         language,
       ),
-      data: result,
+      data: await translateResponse(result, language),
     });
   },
 );

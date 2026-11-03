@@ -1,48 +1,59 @@
 
-import type { Request, Response , NextFunction  } from "express";
-import {BookingFor,ConsultationMode,} from "../generated/prisma/client.js";
-import type { AuthenticatedRequest } from "../middlewares/requireUser.middleware.js";
-import {bookAppointment,getAvailableSlots,listMyAppointments,getAppointmentDetails,cancelAppointment,
-  rescheduleAppointment,  listPendingDoctorAppointments,
-  confirmAppointment,
-  rejectAppointment,} from "../services/appointment.service.js";
-import {getRequestedLanguage,translateResponse} from "../utils/translate.response";
-import { ApiError } from "../utils/ApiError.js";
+import type { Request, Response, NextFunction } from "express";
 import {
-  createTeleconsultationPaymentIntent,
-} from "../services/payment.client.service.js";
+  BookingFor,
+  ConsultationMode,
+} from "../generated/prisma/client.js";
 
+import type { AuthenticatedRequest } from "../middlewares/requireUser.middleware.js";
 
-// export async function getAvailableSlotsController(
-//   req: Request,
-//   res: Response,
-// ) {
-//   try {
-//     const doctorId = req.params.doctorId as string;
-//     const date = req.query.date;
+import {
+  bookAppointment,
+  getAvailableSlots,
+  listMyAppointments,
+  getAppointmentDetails,
+  cancelAppointment,
+  rescheduleAppointment,
+  listPendingDoctorAppointments,
+  confirmAppointment,
+  rejectAppointment,
+} from "../services/appointment.service.js";
 
-//     if (typeof date !== "string") {
-//       res.status(400).json({
-//         success: false,
-//         message: "date query parameter is required (YYYY-MM-DD)",
-//       });
-//       return;
-//     }
+import {
+  getRequestedLanguage,
+  translateResponse,
+} from "../utils/translate.response";
 
-//     const slots = await getAvailableSlots(doctorId, date);
-//     const language = getRequestedLanguage(req);
-//     res.status(200).json({
-//       success: true,
-//       data: await translateResponse(slots, language),
-//     });
-//   } 
-//   catch (error) {
-//     res.status(400).json({
-//       success: false,
-//       message: error instanceof Error ? error.message : "Unable to fetch slots",
-//     });
-//   }
-// }
+import { ApiError } from "../utils/ApiError.js";
+
+function getPatientAgeFromHeader(req: Request): number {
+  const ageHeader = req.headers["x-patient-age"];
+
+  if (
+    typeof ageHeader !== "string" ||
+    !/^\d{1,3}$/.test(ageHeader.trim())
+  ) {
+    throw new ApiError(
+      400,
+      "Valid x-patient-age header is required",
+    );
+  }
+
+  const patientAge = Number(ageHeader.trim());
+
+  if (
+    !Number.isInteger(patientAge) ||
+    patientAge < 0 ||
+    patientAge > 130
+  ) {
+    throw new ApiError(
+      400,
+      "Patient age must be an integer between 0 and 130",
+    );
+  }
+
+  return patientAge;
+}
 
 export async function getAvailableSlotsController(
   req: Request,
@@ -104,7 +115,10 @@ export async function getDoctorAvailableSlotsController(
       return;
     }
 
-    if (role !== "DOCTOR") {
+    if (
+      typeof role !== "string" ||
+      role.trim().toUpperCase() !== "DOCTOR"
+    ) {
       res.status(403).json({
         success: false,
         message: "Only doctors can access their own availability",
@@ -139,142 +153,6 @@ export async function getDoctorAvailableSlotsController(
   }
 }
 
-// export async function bookAppointmentController(
-//   req: Request,
-//   res: Response,
-//   next: NextFunction,
-// ) {
-//   let appointmentId: string | undefined;
-
-//   try {
-//     const authReq = req as AuthenticatedRequest;
-
-//     if (
-//       !authReq.userId ||
-//       !authReq.userRole ||
-//       !["CITIZEN", "PATIENT"].includes(
-//         authReq.userRole.toUpperCase(),
-//       )
-//     ) {
-//       throw new ApiError(403, "Only patients can book appointments");
-//     }
-
-//     const {
-//       patientId,
-//       bookingFor,
-//       doctorId,
-//       hospitalId,
-//       scheduledAt,
-//       durationMinutes,
-//       mode,
-//       reason,
-//     } = req.body;
-
-//     if (
-//       typeof patientId !== "string" ||
-//       !patientId.trim() ||
-//       !Object.values(BookingFor).includes(bookingFor) ||
-//       typeof doctorId !== "string" ||
-//       !doctorId.trim() ||
-//       typeof scheduledAt !== "string" ||
-//       !scheduledAt.trim() ||
-//       (mode !== undefined &&
-//         !Object.values(ConsultationMode).includes(mode)) ||
-//       (hospitalId !== undefined &&
-//         (typeof hospitalId !== "string" || !hospitalId.trim())) ||
-//       (durationMinutes !== undefined &&
-//         (typeof durationMinutes !== "number" ||
-//           !Number.isInteger(durationMinutes))) ||
-//       (reason !== undefined && typeof reason !== "string")
-//     ) {
-//       throw new ApiError(400, "Invalid appointment request");
-//     }
-
-//     if (
-//       bookingFor !== BookingFor.SELF &&
-//       bookingFor !== BookingFor.FAMILY_MEMBER
-//     ) {
-//       throw new ApiError(400, "Unsupported booking type");
-//     }
-
-//     // Step 1: Create the appointment.
-//     // The service should save it as PENDING_PAYMENT.
-//     const appointment = await bookAppointment(authReq.userId, {
-//       patientId: patientId.trim(),
-//       bookingFor,
-//       doctorId: doctorId.trim(),
-//       hospitalId,
-//       scheduledAt,
-//       durationMinutes,
-//       mode,
-//       reason,
-//     });
-
-//     appointmentId = appointment.appointmentId;
-
-//     // Step 2: Create the payment intent using the authenticated
-//     // user's token. Never accept the payment amount from the client.
-//     let payment;
-
-//     try {
-//       payment = await createTeleconsultationPaymentIntent({
-//         appointmentId: appointment.appointmentId,
-//         payerId: authReq.userId,
-//         authorizationHeader: req.headers.authorization,
-//         description: "Uyir Health teleconsultation appointment",
-//       });
-//     } catch (error) {
-//       const statusCode =
-//         error instanceof ApiError ? error.statusCode : 502;
-
-//       const message =
-//         error instanceof ApiError
-//           ? error.message
-//           : "Unable to initiate payment";
-
-//       // The appointment remains PENDING_PAYMENT.
-//       // Return its ID so the client can retry payment later.
-//       res.status(statusCode).json({
-//         success: false,
-//         message,
-//         data: {
-//           appointmentId: appointment.appointmentId,
-//           appointmentStatus: "PENDING",
-//         },
-//       });
-//       return;
-//     }
-
-//     // Step 3: Return checkout information to the frontend.
-//     // Do not confirm the appointment here.
-//     const language = getRequestedLanguage(req);
-
-//     res.status(201).json({
-//       success: true,
-//       message: "Appointment created; complete payment to confirm it",
-//       data: {
-//         appointment: await translateResponse(appointment, language),
-//         payment: {
-//           paymentId: payment.id,
-//           status: payment.status,
-//           checkoutUrl: payment.checkoutUrl,
-//           amount: payment.amount,
-//           currency: payment.currency,
-//         },
-//       },
-//     });
-//   } catch (error) {
-//     if (error instanceof ApiError) {
-//       res.status(error.statusCode).json({
-//         success: false,
-//         message: error.message,
-//       });
-//       return;
-//     }
-
-//     next(error);
-//   }
-// }
 export async function bookAppointmentController(
   req: Request,
   res: Response,
@@ -331,6 +209,10 @@ export async function bookAppointmentController(
       throw new ApiError(400, "Unsupported booking type");
     }
 
+    // Patient age is read from the request header, not the request body.
+    const patientAge = getPatientAgeFromHeader(req);
+
+    // Create appointment with the actual patient's age snapshot.
     const appointment = await bookAppointment(authReq.userId, {
       patientId: patientId.trim(),
       bookingFor,
@@ -340,13 +222,17 @@ export async function bookAppointmentController(
       durationMinutes,
       mode,
       reason,
+      patientAge,
     });
+
+    const language = getRequestedLanguage(req);
 
     res.status(201).json({
       success: true,
-      message: "Appointment booked successfully. Awaiting doctor confirmation.",
+      message:
+        "Appointment booked successfully. Awaiting doctor confirmation.",
       data: {
-        appointment,
+        appointment: await translateResponse(appointment, language),
         appointmentStatus: appointment.status,
       },
     });
@@ -354,9 +240,6 @@ export async function bookAppointmentController(
     next(error);
   }
 }
-
-
-
 
 export async function getMyAppointments(
   req: Request,
@@ -397,7 +280,7 @@ export async function getAppointmentById(
   next: NextFunction,
 ) {
   try {
-    const  appointmentId  = req.params.appointmentId as string;
+    const appointmentId = req.params.appointmentId as string;
     const userId = req.headers["x-user-id"];
     const role = req.headers["x-user-role"];
 
@@ -420,7 +303,6 @@ export async function getAppointmentById(
   }
 }
 
-
 export async function cancelAppointmentController(
   req: Request,
   res: Response,
@@ -434,7 +316,10 @@ export async function cancelAppointmentController(
       reason !== undefined &&
       (typeof reason !== "string" || reason.length > 500)
     ) {
-      throw new ApiError(400, "Cancellation reason must be at most 500 characters");
+      throw new ApiError(
+        400,
+        "Cancellation reason must be at most 500 characters",
+      );
     }
 
     const appointment = await cancelAppointment(
@@ -491,7 +376,6 @@ export async function rescheduleAppointmentController(
     next(error);
   }
 }
-
 
 export async function getPendingDoctorAppointments(
   req: Request,
@@ -591,6 +475,3 @@ export async function rejectAppointmentController(
     next(error);
   }
 }
-
-
-

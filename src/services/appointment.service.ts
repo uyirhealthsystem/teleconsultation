@@ -10,7 +10,7 @@ import { prisma } from "./prisma.service.js";
 import {
   provisionConsultationSessionForPaidAppointment,
 } from "./consultation.session.service.js";
-
+import { assertAppointmentConsentReady } from "./consent.gate.service.js";
 const blockingStatuses: AppointmentStatus[] = [
   AppointmentStatus.PENDING_PAYMENT,
   AppointmentStatus.PENDING,
@@ -50,6 +50,10 @@ interface BookAppointmentInput {
   durationMinutes?: number;
   mode?: ConsultationMode;
   reason?: string;
+
+  // Age of the actual patient, supplied by the controller
+  // from the x-patient-age header after validation.
+  patientAge: number;
 }
 
 type AppointmentWindow = {
@@ -227,6 +231,16 @@ function validateDuration(durationMinutes: number): void {
     throw badRequest(
       `durationMinutes must be between ${MIN_APPOINTMENT_DURATION_MINUTES} and ${MAX_APPOINTMENT_DURATION_MINUTES}`,
     );
+  }
+}
+
+function validatePatientAge(patientAge: number): void {
+  if (
+    !Number.isInteger(patientAge) ||
+    patientAge < 0 ||
+    patientAge > 130
+  ) {
+    throw badRequest("Valid patient age is required");
   }
 }
 
@@ -421,9 +435,17 @@ export async function getAvailableSlots(
     }
   }
 
-  return slots.filter((slot) => slot.available);
-}
+  // Remove duplicate slots if duplicate availability records exist.
+  const uniqueSlots = new Map<string, AppointmentWindow>();
 
+  for (const slot of slots) {
+    uniqueSlots.set(slot.startAt, slot);
+  }
+
+  return Array.from(uniqueSlots.values()).filter(
+    (slot) => slot.available,
+  );
+}
 
 export async function bookAppointment(
   bookedByUserId: string,
@@ -446,6 +468,7 @@ export async function bookAppointment(
     durationMinutes = 30,
     mode = ConsultationMode.VIDEO,
     reason,
+    patientAge,
   } = input;
 
   const authenticatedUserId = bookedByUserId.trim();
@@ -457,6 +480,13 @@ export async function bookAppointment(
   if (!patientId?.trim()) {
     throw badRequest("patientId is required");
   }
+
+  // Validate the actual patient's age.
+  validatePatientAge(patientAge);
+
+  // Store the patient's category as a booking-time snapshot.
+  const patientCategory =
+    patientAge >= 18 ? "ADULT" : "MINOR";
 
   if (!Object.values(BookingFor).includes(bookingFor)) {
     throw badRequest("Invalid bookingFor value");
@@ -581,6 +611,10 @@ export async function bookAppointment(
           mode,
           reason: reason?.trim() || null,
           status: AppointmentStatus.PENDING,
+
+          // Patient age and category snapshot at booking time.
+          patientAgeAtBooking: patientAge,
+          patientCategory,
         },
       });
     },
@@ -591,8 +625,6 @@ export async function bookAppointment(
     },
   );
 }
-
-
 
 export async function listMyAppointments(
   actor: AppointmentActor,
@@ -630,7 +662,6 @@ export async function listMyAppointments(
     throw new ApiError(403, "You are not allowed to view appointments");
   }
 
-  // Fetch appointments without opening a database transaction.
   const appointments = await prisma.appointment.findMany({
     where,
     orderBy: {
@@ -654,8 +685,6 @@ export async function listMyAppointments(
     },
   };
 }
-
-
 
 export async function getAppointmentDetails(
   appointmentId: string,
@@ -904,7 +933,6 @@ export async function rescheduleAppointment(
   );
 }
 
-
 export async function listPendingDoctorAppointments(
   actor: AppointmentActor,
   page = 1,
@@ -952,36 +980,6 @@ export async function listPendingDoctorAppointments(
   };
 }
 
-// export async function confirmAppointment(appointmentId: string) {
-//   const result = await prisma.appointment.updateMany({
-//     where: {
-//       id: appointmentId,
-//       status: "PENDING",
-//     },
-//     data: {
-//       status: "CONFIRMED",
-//     },
-//   });
-
-//   if (result.count === 0) {
-//     throw new ApiError(
-//       409,
-//       "Appointment not found or cannot be confirmed",
-//     );
-//   }
-
-//   const appointment = await prisma.appointment.findUnique({
-//     where: {
-//       id: appointmentId,
-//     },
-//   });
-
-//   if (!appointment) {
-//     throw new ApiError(404, "Appointment not found");
-//   }
-
-//   return appointment;
-// }
 
 export async function confirmAppointment(
   appointmentId: string,
@@ -997,6 +995,31 @@ export async function confirmAppointment(
     throw badRequest("appointmentId is required");
   }
 
+  // Fetch appointment and validate doctor ownership first.
+  const existingAppointment = await prisma.appointment.findUnique({
+    where: { appointmentId },
+  });
+
+  if (
+    !existingAppointment ||
+    existingAppointment.doctorId !== actor.userId
+  ) {
+    throw new ApiError(404, "Appointment not found");
+  }
+
+  if (existingAppointment.status !== AppointmentStatus.PENDING) {
+    throw new ApiError(
+      409,
+      "Appointment cannot be confirmed in its current status",
+    );
+  }
+
+  // Validate patient age, category and guardian consent.
+  // Adults pass without guardian consent.
+  // Minors must have valid signed guardian consent.
+  await assertAppointmentConsentReady(appointmentId);
+
+  // Confirm appointment only after consent validation succeeds.
   const result = await prisma.appointment.updateMany({
     where: {
       appointmentId,
@@ -1009,26 +1032,17 @@ export async function confirmAppointment(
   });
 
   if (result.count !== 1) {
-    const appointment = await prisma.appointment.findUnique({
-      where: { appointmentId },
-    });
-
-    if (!appointment || appointment.doctorId !== actor.userId) {
-      throw new ApiError(404, "Appointment not found");
-    }
-
     throw new ApiError(
       409,
-      "Appointment cannot be confirmed in its current status",
+      "Appointment status changed. Please refresh and try again.",
     );
   }
 
-  // Fetch the confirmed appointment.
   const appointment = await prisma.appointment.findUniqueOrThrow({
     where: { appointmentId },
   });
 
-  // Create or retrieve the 100ms consultation session.
+  // Preserve existing 100ms room provisioning behavior.
   try {
     const session =
       await provisionConsultationSessionForPaidAppointment(
@@ -1042,8 +1056,6 @@ export async function confirmAppointment(
       message: "Appointment confirmed and consultation room is ready",
     };
   } catch (error) {
-    // Appointment remains CONFIRMED.
-    // Room provisioning can be retried separately.
     console.error(
       "100ms room provisioning failed after appointment confirmation:",
       error,
@@ -1058,6 +1070,7 @@ export async function confirmAppointment(
     };
   }
 }
+
 
 export async function rejectAppointment(
   appointmentId: string,

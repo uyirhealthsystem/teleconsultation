@@ -24,29 +24,29 @@ model DoctorAvailability {
 }
 
 model Appointment {
-  appointmentId      String            @id @default(uuid())
-  bookedByUserId     String
-  patientId          String
-  doctorId           String
-  hospitalId         String?
-  bookingFor         BookingFor        @default(SELF)
-  scheduledAt        DateTime
-  durationMinutes    Int               @default(30)
-  mode               ConsultationMode  @default(VIDEO)
-  status             AppointmentStatus @default(PENDING_PAYMENT)
-  reason             String?
-  cancellationReason String?
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
-
-  session      ConsultationSession?
-  note         ConsultationNote?
-  prescription Prescription?
-  consents     ConsentRecord[]
-  participants ConsultationParticipant[]
+  appointmentId       String                    @id @default(uuid())
+  bookedByUserId      String
+  patientId           String
+  doctorId            String
+  hospitalId          String?
+  patientAgeAtBooking Int?
+  bookingFor          BookingFor                @default(SELF)
+  scheduledAt         DateTime
+  durationMinutes     Int                       @default(30)
+  mode                ConsultationMode          @default(VIDEO)
+  status              AppointmentStatus         @default(PENDING_PAYMENT)
+  reason              String?
+  cancellationReason  String?
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  patientCategory     PatientCategory?
+  session             ConsultationSession?
+  note                ConsultationNote?
+  prescription        Prescription?
+  consents            ConsentRecord[]
+  participants        ConsultationParticipant[]
 
   payments Payment[]
-
 
   @@index([patientId, scheduledAt])
   @@index([bookedByUserId, scheduledAt])
@@ -216,27 +216,27 @@ model AuditLog {
 }
 
 model Payment {
-  paymentId       String          @id @default(uuid())
-  appointmentId   String
-  payerUserId     String
-  provider        PaymentProvider @default(RAZORPAY)
-  status          PaymentStatus   @default(CREATED)
+  paymentId     String          @id @default(uuid())
+  appointmentId String
+  payerUserId   String
+  provider      PaymentProvider @default(RAZORPAY)
+  status        PaymentStatus   @default(CREATED)
 
-  amount          Int
-  currency        String          @default("INR")
+  amount   Int
+  currency String @default("INR")
 
   gatewayOrderId   String? @unique
   gatewayPaymentId String? @unique
   gatewayRefundId  String? @unique
 
-  paymentMethod   String?
-  failureCode     String?
-  failureMessage  String?
+  paymentMethod  String?
+  failureCode    String?
+  failureMessage String?
 
-  paidAt          DateTime?
-  refundedAt      DateTime?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  paidAt     DateTime?
+  refundedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   appointment Appointment @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
 
@@ -261,6 +261,11 @@ model PaymentWebhookEvent {
   @@index([paymentId, paymentStatus])
   @@index([status, createdAt])
   @@index([appointmentId])
+}
+
+enum PatientCategory {
+  ADULT
+  MINOR
 }
 
 enum PaymentWebhookEventStatus {

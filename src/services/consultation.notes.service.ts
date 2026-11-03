@@ -20,6 +20,7 @@ type ConsultationNoteInput = {
   clinicalNotes?: string | null;
   advice?: string | null;
   followUpAt?: string | null;
+  finalize?: boolean;
 };
 
 const PATIENT_ROLES = new Set([
@@ -36,6 +37,16 @@ const NOTE_FIELDS = [
   "advice",
   "followUpAt",
 ] as const;
+
+function validatePatientAge(patientAge: number) {
+  if (
+    !Number.isInteger(patientAge) ||
+    patientAge < 0 ||
+    patientAge > 130
+  ) {
+    throw new ApiError(400, "Invalid patient age stored on appointment");
+  }
+}
 
 function validateNoteInput(input: ConsultationNoteInput) {
   const values = [
@@ -64,8 +75,13 @@ function validateNoteInput(input: ConsultationNoteInput) {
   }
 
   if (
-    !NOTE_FIELDS.some((field) => input[field] !== undefined)
+    input.finalize !== undefined &&
+    typeof input.finalize !== "boolean"
   ) {
+    throw new ApiError(400, "finalize must be a boolean");
+  }
+
+  if (!NOTE_FIELDS.some((field) => input[field] !== undefined)) {
     throw new ApiError(400, "Provide at least one consultation note field");
   }
 }
@@ -81,19 +97,25 @@ function toNoteData(input: ConsultationNoteInput) {
 
   if (input.symptoms !== undefined) data.symptoms = input.symptoms;
   if (input.diagnosis !== undefined) data.diagnosis = input.diagnosis;
-  if (input.clinicalNotes !== undefined) {
-    data.clinicalNotes = input.clinicalNotes;
-  }
+  if (input.clinicalNotes !== undefined) data.clinicalNotes = input.clinicalNotes;
   if (input.advice !== undefined) data.advice = input.advice;
 
   if (input.followUpAt !== undefined) {
     data.followUpAt =
-      input.followUpAt === null
-        ? null
-        : new Date(input.followUpAt);
+      input.followUpAt === null ? null : new Date(input.followUpAt);
   }
 
   return data;
+}
+
+function validateFinalNote(input: ConsultationNoteInput) {
+  if (!input.diagnosis?.trim()) {
+    throw new ApiError(400, "Diagnosis is required before finalizing the note");
+  }
+
+  if (!input.clinicalNotes?.trim()) {
+    throw new ApiError(400, "Clinical notes are required before finalizing the note");
+  }
 }
 
 async function authorizeAppointment(
@@ -112,6 +134,26 @@ async function authorizeAppointment(
     throw new ApiError(404, "Appointment not found");
   }
 
+  const patientAge = appointment.patientAgeAtBooking;
+
+  if (patientAge === null || patientAge === undefined) {
+    throw new ApiError(
+      409,
+      "Patient age was not recorded for this appointment. Notes access is unavailable.",
+    );
+  }
+
+  validatePatientAge(patientAge);
+
+  const expectedCategory = patientAge >= 18 ? "ADULT" : "MINOR";
+
+  if (appointment.patientCategory !== expectedCategory) {
+    throw new ApiError(
+      409,
+      "Patient category does not match the age recorded for this appointment",
+    );
+  }
+
   const role = actor.role.trim().toUpperCase();
 
   const isDoctor =
@@ -122,11 +164,7 @@ async function authorizeAppointment(
     PATIENT_ROLES.has(role) &&
     appointment.patientId === actor.userId;
 
-  const isBooker =
-    PATIENT_ROLES.has(role) &&
-    appointment.bookedByUserId === actor.userId;
-
-  if (!isDoctor && !isPatient && !isBooker) {
+  if (!isDoctor && !isPatient) {
     throw new ApiError(
       403,
       "You are not authorized to access this consultation note",
@@ -137,17 +175,31 @@ async function authorizeAppointment(
     appointment,
     isDoctor,
     isPatient,
-    isBooker,
+    patientAge,
   };
 }
 
-async function assertNoteWritingAllowed(
+async function assertNoteConsentReady(
   appointmentId: string,
+  patientAge: number,
 ) {
+  validatePatientAge(patientAge);
+
+  if (patientAge >= 18) return;
+
   await assertAppointmentHasSignedConsent(
     appointmentId,
-    ConsentType.TELECONSULTATION,
+    ConsentType.MINOR_GUARDIAN,
+    patientAge,
   );
+}
+
+async function getSessionForNote(
+  appointmentId: string,
+  patientAge: number,
+  requireEnded = false,
+) {
+  await assertNoteConsentReady(appointmentId, patientAge);
 
   const session = await prisma.consultationSession.findUnique({
     where: { appointmentId },
@@ -170,6 +222,13 @@ async function assertNoteWritingAllowed(
     );
   }
 
+  if (requireEnded && session.status !== SessionStatus.ENDED) {
+    throw new ApiError(
+      409,
+      "End the consultation session before finalizing the note",
+    );
+  }
+
   return session;
 }
 
@@ -188,29 +247,25 @@ async function getNoteOrThrow(
   return note;
 }
 
-/**
- * Create a draft note for an appointment.
- * Only the assigned doctor can create it.
- */
 export async function createConsultationNote(
   appointmentId: string,
   actor: ConsultationNoteActor,
   input: ConsultationNoteInput,
 ) {
-  const { appointment, isDoctor } = await authorizeAppointment(
-    appointmentId,
-    actor,
-  );
+  const { appointment, isDoctor, patientAge } =
+    await authorizeAppointment(appointmentId, actor);
 
   if (!isDoctor) {
-    throw new ApiError(
-      403,
-      "Only the assigned doctor can create consultation notes",
-    );
+    throw new ApiError(403, "Only the assigned doctor can create consultation notes");
   }
 
   validateNoteInput(input);
-  await assertNoteWritingAllowed(appointmentId);
+
+  const shouldFinalize = input.finalize === true;
+
+  if (shouldFinalize) validateFinalNote(input);
+
+  await getSessionForNote(appointmentId, patientAge, shouldFinalize);
 
   const existing = await prisma.consultationNote.findUnique({
     where: { appointmentId },
@@ -219,7 +274,7 @@ export async function createConsultationNote(
   if (existing) {
     throw new ApiError(
       409,
-      "A consultation note already exists for this appointment",
+      "A consultation note already exists for this appointment. Update the existing draft instead.",
     );
   }
 
@@ -228,12 +283,14 @@ export async function createConsultationNote(
       data: {
         appointmentId,
         doctorId: appointment.doctorId,
-        status: ConsultationNoteStatus.DRAFT,
+        status: shouldFinalize
+          ? ConsultationNoteStatus.FINALIZED
+          : ConsultationNoteStatus.DRAFT,
+        ...(shouldFinalize ? { finalizedAt: new Date() } : {}),
         ...toNoteData(input),
       },
     });
   } catch (error) {
-    // Handle concurrent requests for the unique appointment note.
     const existingNote = await prisma.consultationNote.findUnique({
       where: { appointmentId },
     });
@@ -249,16 +306,14 @@ export async function createConsultationNote(
   }
 }
 
-/**
- * Retrieve a consultation note.
- * Patients/bookers can see finalized notes only.
- */
 export async function getConsultationNote(
   appointmentId: string,
   actor: ConsultationNoteActor,
 ) {
-  const { isDoctor, isPatient, isBooker } =
+  const { isDoctor, isPatient, patientAge } =
     await authorizeAppointment(appointmentId, actor);
+
+  await assertNoteConsentReady(appointmentId, patientAge);
 
   const note = await prisma.consultationNote.findUnique({
     where: { appointmentId },
@@ -268,7 +323,7 @@ export async function getConsultationNote(
     throw new ApiError(404, "Consultation note not found");
   }
 
-  if (!isDoctor && (isPatient || isBooker)) {
+  if (!isDoctor && isPatient) {
     if (note.status !== ConsultationNoteStatus.FINALIZED) {
       throw new ApiError(
         403,
@@ -280,46 +335,40 @@ export async function getConsultationNote(
   return note;
 }
 
-/**
- * Update a draft note.
- * Finalized notes cannot be edited.
- */
 export async function updateConsultationNote(
   appointmentId: string,
   noteId: string,
   actor: ConsultationNoteActor,
   input: ConsultationNoteInput,
 ) {
-  const { appointment, isDoctor } = await authorizeAppointment(
-    appointmentId,
-    actor,
-  );
+  const { appointment, isDoctor, patientAge } =
+    await authorizeAppointment(appointmentId, actor);
 
   if (!isDoctor) {
-    throw new ApiError(
-      403,
-      "Only the assigned doctor can update consultation notes",
-    );
+    throw new ApiError(403, "Only the assigned doctor can update consultation notes");
   }
 
   validateNoteInput(input);
-  await assertNoteWritingAllowed(appointmentId);
+
+  if (input.finalize === true) validateFinalNote(input);
+
+  await getSessionForNote(
+    appointmentId,
+    patientAge,
+    input.finalize === true,
+  );
 
   const note = await getNoteOrThrow(appointmentId, noteId);
 
   if (note.doctorId !== appointment.doctorId) {
-    throw new ApiError(
-      403,
-      "You are not authorized to update this note",
-    );
+    throw new ApiError(403, "You are not authorized to update this note");
   }
 
   if (note.status !== ConsultationNoteStatus.DRAFT) {
-    throw new ApiError(
-      409,
-      "Finalized consultation notes cannot be edited",
-    );
+    throw new ApiError(409, "Finalized consultation notes cannot be edited");
   }
+
+  const shouldFinalize = input.finalize === true;
 
   const result = await prisma.consultationNote.updateMany({
     where: {
@@ -328,75 +377,50 @@ export async function updateConsultationNote(
       doctorId: actor.userId,
       status: ConsultationNoteStatus.DRAFT,
     },
-    data: toNoteData(input),
+    data: {
+      ...toNoteData(input),
+      ...(shouldFinalize
+        ? {
+            status: ConsultationNoteStatus.FINALIZED,
+            finalizedAt: new Date(),
+          }
+        : {}),
+    },
   });
 
   if (result.count === 0) {
-    throw new ApiError(
-      409,
-      "The note changed or was finalized. Refresh and try again",
-    );
+    throw new ApiError(409, "The note changed or was finalized. Refresh and try again");
   }
 
   return getNoteOrThrow(appointmentId, noteId);
 }
 
-/**
- * Finalize a draft note.
- * The consultation session must have ended.
- */
 export async function finalizeConsultationNote(
   appointmentId: string,
   noteId: string,
   actor: ConsultationNoteActor,
 ) {
-  const { appointment, isDoctor } = await authorizeAppointment(
-    appointmentId,
-    actor,
-  );
+  const { appointment, isDoctor, patientAge } =
+    await authorizeAppointment(appointmentId, actor);
 
   if (!isDoctor) {
-    throw new ApiError(
-      403,
-      "Only the assigned doctor can finalize consultation notes",
-    );
+    throw new ApiError(403, "Only the assigned doctor can finalize consultation notes");
   }
 
-  await assertNoteWritingAllowed(appointmentId);
-
-  const session = await prisma.consultationSession.findUnique({
-    where: { appointmentId },
-  });
-
-  if (!session || session.status !== SessionStatus.ENDED) {
-    throw new ApiError(
-      409,
-      "End the consultation session before finalizing the note",
-    );
-  }
+  await getSessionForNote(appointmentId, patientAge, true);
 
   const note = await getNoteOrThrow(appointmentId, noteId);
 
   if (note.doctorId !== appointment.doctorId) {
-    throw new ApiError(
-      403,
-      "You are not authorized to finalize this note",
-    );
+    throw new ApiError(403, "You are not authorized to finalize this note");
   }
 
-  if (note.status === ConsultationNoteStatus.FINALIZED) {
-    return note;
-  }
+  if (note.status === ConsultationNoteStatus.FINALIZED) return note;
 
-  if (
-    !note.diagnosis?.trim() ||
-    !note.clinicalNotes?.trim()
-  ) {
-    throw new ApiError(
-      400,
-      "Diagnosis and clinical notes are required before finalization",
-    );
-  }
+  validateFinalNote({
+    diagnosis: note.diagnosis,
+    clinicalNotes: note.clinicalNotes,
+  });
 
   const result = await prisma.consultationNote.updateMany({
     where: {
@@ -414,9 +438,7 @@ export async function finalizeConsultationNote(
   if (result.count === 0) {
     const latest = await getNoteOrThrow(appointmentId, noteId);
 
-    if (latest.status === ConsultationNoteStatus.FINALIZED) {
-      return latest;
-    }
+    if (latest.status === ConsultationNoteStatus.FINALIZED) return latest;
 
     throw new ApiError(
       409,

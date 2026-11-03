@@ -14,7 +14,7 @@ router.post(
 );
 
 router.get(
-  "/appointments/:appointmentId/consent",
+  "/appointments/:appointmentId/consents",
   getConsentsController,
 );
 

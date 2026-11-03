@@ -1,31 +1,30 @@
 
-import {ConsentStatus,ConsentType} from "../generated/prisma/client.js";
-import { prisma } from "./prisma.service.js";
+import { ConsentType } from "../generated/prisma/client.js";
 
+import { prisma } from "./prisma.service.js";
+import { assertAppointmentHasSignedConsent } from "./consent.service.js";
 import { ApiError } from "../utils/ApiError.js";
 
+/**
+ * Check whether an appointment is ready for consultation.
+ *
+ * Adult:
+ * No guardian consent required.
+ *
+ * Minor:
+ * Existing signed guardian consent is mandatory.
+ *
+ * Patient age is read from the appointment database record.
+ */
 export async function assertAppointmentConsentReady(
   appointmentId: string,
 ) {
   const appointment = await prisma.appointment.findUnique({
     where: { appointmentId },
-    include: {
-      consents: {
-        where: {
-          status: ConsentStatus.SIGNED,
-          revokedAt: null,
-          signedAt: { not: null },
-        },
-      },
-    },
   });
 
   if (!appointment) {
-    const error = new Error("Appointment not found") as Error & {
-      statusCode: number;
-    };
-    error.statusCode = 404;
-    throw error;
+    throw new ApiError(404, "Appointment not found");
   }
 
   if (
@@ -33,53 +32,44 @@ export async function assertAppointmentConsentReady(
     appointment.status === "COMPLETED"
   ) {
     throw new ApiError(
-        400,
+      400,
       "This appointment cannot be joined",
     );
   }
 
-  const consents = appointment.consents;
+  const patientAge = appointment.patientAgeAtBooking;
 
-  // Every appointment requires teleconsultation consent.
-  const hasTeleconsultationConsent = consents.some(
-    (consent) =>
-      consent.consentType === ConsentType.TELECONSULTATION &&
-      (
-        consent.signerUserId === appointment.patientId ||
-        consent.signerUserId === appointment.bookedByUserId
-      ),
+  if (patientAge === null || patientAge === undefined) {
+    throw new ApiError(
+      409,
+      "Patient age was not recorded for this appointment",
+    );
+  }
+
+  if (
+    !Number.isInteger(patientAge) ||
+    patientAge < 0 ||
+    patientAge > 130
+  ) {
+    throw new ApiError(
+      409,
+      "Invalid patient age stored on appointment",
+    );
+  }
+
+  const expectedCategory = patientAge >= 18 ? "ADULT" : "MINOR";
+
+  if (appointment.patientCategory !== expectedCategory) {
+    throw new ApiError(
+      409,
+      "Patient category does not match the age recorded for this appointment",
+    );
+  }
+
+  await assertAppointmentHasSignedConsent(
+    appointmentId,
+    ConsentType.MINOR_GUARDIAN,
   );
-
-  if (!hasTeleconsultationConsent) {
-    throw new ApiError(400,"Teleconsultation consent is required before joining"
-
-    );
-  }
-
-  // When someone books for another person, require evidence that
-  // the patient consented themselves or that a representative/guardian
-  // consent record exists. Authority must be verified separately.
-  
-  if (appointment.patientId !== appointment.bookedByUserId) {
-    const patientConsented = consents.some(
-      (consent) =>
-        consent.consentType === ConsentType.TELECONSULTATION &&
-        consent.signerUserId === appointment.patientId,
-    );
-
-    const representativeConsentExists = consents.some(
-      (consent) =>
-        (
-          consent.consentType === ConsentType.MINOR_GUARDIAN ||
-          consent.consentType === ConsentType.REPRESENTATIVE
-        ) &&
-        consent.signerUserId === appointment.bookedByUserId,
-    );
-
-    if (!patientConsented && !representativeConsentExists) {
-      throw new ApiError(400,"Patient consent or appropriate representative consent is required");
-    }
-  }
 
   return appointment;
 }

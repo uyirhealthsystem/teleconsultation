@@ -1,3 +1,4 @@
+
 import type { Request, Response } from "express";
 
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -15,31 +16,19 @@ import type {
 import {
   getRequestedLanguage,
   translateResponse,
-} from "../utils/translate.response";
+} from "../utils/translate.response.js";
 
-/**
- * Read the authenticated user information.
- */
 function getActor(req: Request): PrescriptionActor {
   const userId = req.header("x-user-id");
   const role = req.header("x-user-role");
 
   if (!userId || !role) {
-    throw new ApiError(
-      401,
-      "Missing authenticated user information",
-    );
+    throw new ApiError(401, "Missing authenticated user information");
   }
 
-  return {
-    userId,
-    role,
-  };
+  return { userId, role };
 }
 
-/**
- * Read and validate appointmentId from route parameters.
- */
 function getRequiredParam(
   req: Request,
   name: "appointmentId",
@@ -47,30 +36,16 @@ function getRequiredParam(
   const value = req.params[name] as string;
 
   if (!value || !value.trim()) {
-    throw new ApiError(
-      400,
-      `${name} is required`,
-    );
+    throw new ApiError(400, `${name} is required`);
   }
 
   return value;
 }
 
-/**
- * POST /appointments/:appointmentId/prescription
- *
- * Create and immediately issue a complete prescription
- * containing multiple medicine items.
- */
 export const createPrescriptionController = asyncHandler(
   async (req: Request, res: Response) => {
-    const appointmentId = getRequiredParam(
-      req,
-      "appointmentId",
-    );
-
     const prescription = await createPrescription(
-      appointmentId,
+      getRequiredParam(req, "appointmentId"),
       getActor(req),
       req.body,
     );
@@ -88,21 +63,10 @@ export const createPrescriptionController = asyncHandler(
   },
 );
 
-/**
- * GET /appointments/:appointmentId/prescription
- *
- * Retrieve the prescription for a specific appointment.
- * The service authorizes the doctor or actual patient.
- */
 export const getPrescriptionController = asyncHandler(
   async (req: Request, res: Response) => {
-    const appointmentId = getRequiredParam(
-      req,
-      "appointmentId",
-    );
-
     const prescription = await getPrescription(
-      appointmentId,
+      getRequiredParam(req, "appointmentId"),
       getActor(req),
     );
 
