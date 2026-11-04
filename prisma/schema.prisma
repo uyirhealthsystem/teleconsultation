@@ -43,10 +43,12 @@ model Appointment {
   session             ConsultationSession?
   note                ConsultationNote?
   prescription        Prescription?
+  prescriptionDecision PrescriptionDecision @default(PENDING)
   consents            ConsentRecord[]
   participants        ConsultationParticipant[]
-
-  payments Payment[]
+  complaints          ConsultationComplaint[]
+  feedback            ConsultationFeedback[]
+  payments            Payment[]
 
   @@index([patientId, scheduledAt])
   @@index([bookedByUserId, scheduledAt])
@@ -139,6 +141,56 @@ model ConsultationNote {
 
   @@index([doctorId, createdAt])
   @@index([status, updatedAt])
+}
+
+model ConsultationComplaint {
+  complaintId   String @id @default(uuid())
+  appointmentId String
+  submittedBy   String
+  patientId     String
+
+  category    ComplaintCategory
+  subject     String
+  description String
+
+  status ComplaintStatus @default(OPEN)
+
+  resolution String?
+  resolvedBy String?
+  resolvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
+
+  @@index([submittedBy, createdAt])
+  @@index([patientId, createdAt])
+  @@index([appointmentId])
+  @@index([status, createdAt])
+}
+
+model ConsultationFeedback {
+  feedbackId    String                @id @default(uuid())
+  appointmentId String
+  submittedBy   String
+  submittedRole FeedbackSubmittedRole
+
+  overallRating       Int?
+  communicationRating Int?
+  experienceRating    Int?
+  cooperationRating   Int?
+
+  comments String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
+
+  @@unique([appointmentId, submittedBy])
+  @@index([submittedBy, createdAt])
+  @@index([appointmentId, submittedRole])
 }
 
 model Prescription {
@@ -339,6 +391,31 @@ enum ConsentStatus {
   REVOKED
 }
 
+enum ComplaintCategory {
+  DOCTOR_NO_SHOW
+  DOCTOR_DELAY
+  TECHNICAL_ISSUE
+  PAYMENT_ISSUE
+  DOCTOR_BEHAVIOUR
+  PRESCRIPTION_ISSUE
+  SERVICE_QUALITY
+  OTHER
+}
+
+enum ComplaintStatus {
+  OPEN
+  UNDER_REVIEW
+  IN_PROGRESS
+  RESOLVED
+  REJECTED
+  CLOSED
+}
+
+enum FeedbackSubmittedRole {
+  PATIENT
+  DOCTOR
+}
+
 enum SignatureMethod {
   ELECTRONIC_ATTESTATION
   DIGITAL_CERTIFICATE
@@ -356,6 +433,12 @@ enum PrescriptionStatus {
   DRAFT
   ISSUED
   CANCELLED
+}
+
+enum PrescriptionDecision {
+  PENDING
+  PRESCRIBED
+  NOT_REQUIRED
 }
 
 enum NotificationChannel {

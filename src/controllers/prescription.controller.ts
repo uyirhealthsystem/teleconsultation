@@ -7,6 +7,9 @@ import { ApiError } from "../utils/ApiError.js";
 import {
   createPrescription,
   getPrescription,
+  updatePrescriptionDecision,
+  updatePrescriptionItem,
+  deletePrescriptionItem,
 } from "../services/prescription.service.js";
 
 import type {
@@ -27,6 +30,16 @@ function getActor(req: Request): PrescriptionActor {
   }
 
   return { userId, role };
+}
+
+function getRequiredMedicineParam(req: Request): string {
+  const value = req.params.prescriptionItemId as string;
+
+  if (!value || !value.trim()) {
+    throw new ApiError(400, "prescriptionItemId is required");
+  }
+
+  return value;
 }
 
 function getRequiredParam(
@@ -79,6 +92,70 @@ export const getPrescriptionController = asyncHandler(
         language,
       ),
       data: prescription,
+    });
+  },
+);
+
+export const updatePrescriptionDecisionController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const appointment = await updatePrescriptionDecision(
+      getRequiredParam(req, "appointmentId"),
+      getActor(req),
+      req.body?.decision,
+    );
+
+    const language = getRequestedLanguage(req);
+
+    res.status(200).json({
+      success: true,
+      message: await translateResponse(
+        "Prescription decision recorded successfully",
+        language,
+      ),
+      data: appointment,
+    });
+  },
+);
+
+export const updatePrescriptionItemController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const medicine = await updatePrescriptionItem(
+      getRequiredParam(req, "appointmentId"),
+      getRequiredMedicineParam(req),
+      getActor(req),
+      req.body,
+    );
+
+    const language = getRequestedLanguage(req);
+
+    res.status(200).json({
+      success: true,
+      message: await translateResponse(
+        "Prescription medicine updated successfully",
+        language,
+      ),
+      data: medicine,
+    });
+  },
+);
+
+export const deletePrescriptionItemController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await deletePrescriptionItem(
+      getRequiredParam(req, "appointmentId"),
+      getRequiredMedicineParam(req),
+      getActor(req),
+    );
+
+    const language = getRequestedLanguage(req);
+
+    res.status(200).json({
+      success: true,
+      message: await translateResponse(
+        "Prescription medicine deleted successfully",
+        language,
+      ),
+      data: result,
     });
   },
 );

@@ -11,6 +11,8 @@ import {
   provisionConsultationSessionForPaidAppointment,
 } from "./consultation.session.service.js";
 import { assertAppointmentConsentReady } from "./consent.gate.service.js";
+import { publishConsultationRoomReady } from "../events/consultation.events.js";
+
 const blockingStatuses: AppointmentStatus[] = [
   AppointmentStatus.PENDING_PAYMENT,
   AppointmentStatus.PENDING,
@@ -981,6 +983,96 @@ export async function listPendingDoctorAppointments(
 }
 
 
+// export async function confirmAppointment(
+//   appointmentId: string,
+//   actor: AppointmentActor,
+// ) {
+//   validateActor(actor);
+
+//   if (normalizeRole(actor.role) !== "DOCTOR") {
+//     throw new ApiError(403, "Only doctors can confirm appointments");
+//   }
+
+//   if (!appointmentId?.trim()) {
+//     throw badRequest("appointmentId is required");
+//   }
+
+//   // Fetch appointment and validate doctor ownership first.
+//   const existingAppointment = await prisma.appointment.findUnique({
+//     where: { appointmentId },
+//   });
+
+//   if (
+//     !existingAppointment ||
+//     existingAppointment.doctorId !== actor.userId
+//   ) {
+//     throw new ApiError(404, "Appointment not found");
+//   }
+
+//   if (existingAppointment.status !== AppointmentStatus.PENDING) {
+//     throw new ApiError(
+//       409,
+//       "Appointment cannot be confirmed in its current status",
+//     );
+//   }
+
+//   // Validate patient age, category and guardian consent.
+//   // Adults pass without guardian consent.
+//   // Minors must have valid signed guardian consent.
+//   await assertAppointmentConsentReady(appointmentId);
+
+//   // Confirm appointment only after consent validation succeeds.
+//   const result = await prisma.appointment.updateMany({
+//     where: {
+//       appointmentId,
+//       doctorId: actor.userId,
+//       status: AppointmentStatus.PENDING,
+//     },
+//     data: {
+//       status: AppointmentStatus.CONFIRMED,
+//     },
+//   });
+
+//   if (result.count !== 1) {
+//     throw new ApiError(
+//       409,
+//       "Appointment status changed. Please refresh and try again.",
+//     );
+//   }
+
+//   const appointment = await prisma.appointment.findUniqueOrThrow({
+//     where: { appointmentId },
+//   });
+
+//   // Preserve existing 100ms room provisioning behavior.
+//   try {
+//     const session =
+//       await provisionConsultationSessionForPaidAppointment(
+//         appointmentId,
+//       );
+
+//     return {
+//       appointment,
+//       session,
+//       roomCreated: true,
+//       message: "Appointment confirmed and consultation room is ready",
+//     };
+//   } catch (error) {
+//     console.error(
+//       "100ms room provisioning failed after appointment confirmation:",
+//       error,
+//     );
+
+//     return {
+//       appointment,
+//       session: null,
+//       roomCreated: false,
+//       message:
+//         "Appointment confirmed, but consultation room creation failed. Please retry room provisioning.",
+//     };
+//   }
+// }
+
 export async function confirmAppointment(
   appointmentId: string,
   actor: AppointmentActor,
@@ -1015,8 +1107,6 @@ export async function confirmAppointment(
   }
 
   // Validate patient age, category and guardian consent.
-  // Adults pass without guardian consent.
-  // Minors must have valid signed guardian consent.
   await assertAppointmentConsentReady(appointmentId);
 
   // Confirm appointment only after consent validation succeeds.
@@ -1042,12 +1132,25 @@ export async function confirmAppointment(
     where: { appointmentId },
   });
 
-  // Preserve existing 100ms room provisioning behavior.
+  // Provision the 100ms room first.
   try {
     const session =
       await provisionConsultationSessionForPaidAppointment(
         appointmentId,
       );
+
+    // Publish notification event only after room provisioning succeeds.
+    // The publisher must handle Kafka errors internally.
+    await publishConsultationRoomReady({
+      appointmentId: appointment.appointmentId,
+      patientId: appointment.patientId,
+      bookedByUserId: appointment.bookedByUserId,
+      doctorId: appointment.doctorId,
+      hospitalId: appointment.hospitalId ?? null,
+      scheduledAt: appointment.scheduledAt.toISOString(),
+      durationMinutes: appointment.durationMinutes,
+      mode: appointment.mode,
+    });
 
     return {
       appointment,

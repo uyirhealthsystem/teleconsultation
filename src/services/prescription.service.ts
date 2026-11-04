@@ -1,6 +1,7 @@
 
 import {
   ConsentType,
+  PrescriptionDecision,
   PrescriptionStatus,
   SessionStatus,
 } from "../generated/prisma/client.js";
@@ -342,4 +343,228 @@ export async function getPrescription(
   }
 
   return prescription;
+}
+
+export async function updatePrescriptionDecision(
+  appointmentId: string,
+  actor: PrescriptionActor,
+  decision: PrescriptionDecision,
+) {
+  const { appointment, isDoctor } = await authorizeAppointment(
+    appointmentId,
+    actor,
+  );
+
+  if (!isDoctor) {
+    throw new ApiError(
+      403,
+      "Only the assigned doctor can update the prescription decision",
+    );
+  }
+
+  if (
+    decision !== PrescriptionDecision.PRESCRIBED &&
+    decision !== PrescriptionDecision.NOT_REQUIRED
+  ) {
+    throw new ApiError(
+      400,
+      "Decision must be PRESCRIBED or NOT_REQUIRED",
+    );
+  }
+
+  if (appointment.status === "COMPLETED" ||
+      appointment.status === "CANCELLED") {
+    throw new ApiError(
+      409,
+      "Prescription decision cannot be changed for this appointment",
+    );
+  }
+
+  const session = await prisma.consultationSession.findUnique({
+    where: { appointmentId },
+  });
+
+  if (!session || session.status !== SessionStatus.ENDED) {
+    throw new ApiError(
+      409,
+      "End the consultation session before updating the prescription decision",
+    );
+  }
+
+  const prescription = await prisma.prescription.findUnique({
+    where: { appointmentId },
+  });
+
+  if (decision === PrescriptionDecision.PRESCRIBED) {
+    if (!prescription || prescription.status !== PrescriptionStatus.ISSUED) {
+      throw new ApiError(
+        409,
+        "Create and issue the prescription before selecting PRESCRIBED",
+      );
+    }
+  }
+
+  if (decision === PrescriptionDecision.NOT_REQUIRED && prescription) {
+    throw new ApiError(
+      409,
+      "A prescription already exists. This appointment cannot be marked as NOT_REQUIRED",
+    );
+  }
+
+  if (
+    appointment.prescriptionDecision !== PrescriptionDecision.PENDING
+  ) {
+    if (appointment.prescriptionDecision === decision) {
+      return appointment;
+    }
+
+    throw new ApiError(
+      409,
+      "The prescription decision has already been recorded",
+    );
+  }
+
+  const result = await prisma.appointment.updateMany({
+    where: {
+      appointmentId,
+      doctorId: actor.userId,
+      prescriptionDecision: PrescriptionDecision.PENDING,
+    },
+    data: {
+      prescriptionDecision: decision,
+    },
+  });
+
+  if (result.count === 0) {
+    throw new ApiError(
+      409,
+      "Prescription decision was already updated. Refresh and try again",
+    );
+  }
+
+  return prisma.appointment.findUniqueOrThrow({
+    where: { appointmentId },
+  });
+}
+
+/**
+ * Update an existing prescription medicine.
+ * Only the assigned doctor can update medicines.
+ */
+export async function updatePrescriptionItem(
+  appointmentId: string,
+  prescriptionItemId: string,
+  actor: PrescriptionActor,
+  input: PrescriptionItemInput,
+) {
+  const { appointment, isDoctor } = await authorizeAppointment(
+    appointmentId,
+    actor,
+  );
+
+  if (!isDoctor) {
+    throw new ApiError(403, "Only the assigned doctor can update medicines");
+  }
+
+  if (appointment.status === "COMPLETED" || appointment.status === "CANCELLED") {
+    throw new ApiError(409, "Medicines cannot be changed for this appointment");
+  }
+
+  const prescription = await prisma.prescription.findUnique({
+    where: { appointmentId },
+  });
+
+  if (!prescription) {
+    throw new ApiError(404, "Prescription not found");
+  }
+
+  if (prescription.status !== PrescriptionStatus.DRAFT) {
+    throw new ApiError(
+      409,
+      "Only draft prescriptions can be edited",
+    );
+  }
+
+  validateItemInput(input);
+
+  const item = await prisma.prescriptionItem.findFirst({
+    where: {
+      prescriptionItemId,
+      prescriptionId: prescription.prescriptionId,
+    },
+  });
+
+  if (!item) {
+    throw new ApiError(404, "Prescription medicine not found");
+  }
+
+  return prisma.prescriptionItem.update({
+    where: { prescriptionItemId },
+    data: {
+      medicineName: input.medicineName!.trim(),
+      dosage: input.dosage ?? null,
+      frequency: input.frequency ?? null,
+      duration: input.duration ?? null,
+      quantity: input.quantity ?? null,
+      instructions: input.instructions ?? null,
+      sortOrder: input.sortOrder ?? item.sortOrder,
+    },
+  });
+}
+
+/**
+ * Delete a medicine from a draft prescription.
+ */
+export async function deletePrescriptionItem(
+  appointmentId: string,
+  prescriptionItemId: string,
+  actor: PrescriptionActor,
+) {
+  const { isDoctor, appointment } = await authorizeAppointment(
+    appointmentId,
+    actor,
+  );
+
+  if (!isDoctor) {
+    throw new ApiError(403, "Only the assigned doctor can delete medicines");
+  }
+
+  if (appointment.status === "COMPLETED" || appointment.status === "CANCELLED") {
+    throw new ApiError(409, "Medicines cannot be changed for this appointment");
+  }
+
+  const prescription = await prisma.prescription.findUnique({
+    where: { appointmentId },
+  });
+
+  if (!prescription) {
+    throw new ApiError(404, "Prescription not found");
+  }
+
+  if (prescription.status !== PrescriptionStatus.DRAFT) {
+    throw new ApiError(
+      409,
+      "Only draft prescriptions can be edited",
+    );
+  }
+
+  const item = await prisma.prescriptionItem.findFirst({
+    where: {
+      prescriptionItemId,
+      prescriptionId: prescription.prescriptionId,
+    },
+  });
+
+  if (!item) {
+    throw new ApiError(404, "Prescription medicine not found");
+  }
+
+  await prisma.prescriptionItem.delete({
+    where: { prescriptionItemId },
+  });
+
+  return {
+    prescriptionItemId,
+    message: "Prescription medicine deleted successfully",
+  };
 }
